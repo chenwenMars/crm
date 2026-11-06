@@ -5,35 +5,54 @@ import {
 	type Prisma,
 	Prisma as PrismaNamespace,
 } from "@crm/db";
+import { normalizeCurrency } from "@crm/db/currency";
+import {
+	CLOSED_DEAL_STAGES,
+	isClosedStage,
+	LOSING_DEAL_STAGES,
+	OPEN_DEAL_STAGES,
+} from "@crm/db/deal-stage";
+import type { FieldDefinitionWithOptions } from "@crm/db/fields";
 import {
 	BadRequestException,
 	Injectable,
 	Logger,
 	NotFoundException,
 } from "@nestjs/common";
+import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { ARCHIVE } from "../archive/archive-config";
 import {
 	ActivityStampService,
 	type StampTargets,
 } from "../crm/activity-stamp.service";
-import { fromCents, toCents } from "../crm/values";
-import { InjectDatabase } from "../database/database.constants";
+import { type BulkResult, requireOwner, runBulk } from "../crm/bulk";
 import {
+	blankToNull,
+	decimalFromCents,
+	fromCents,
+	toCents,
+} from "../crm/values";
+import { ConversionService } from "../currency/conversion.service";
+import { InjectDatabase } from "../database/database.constants";
+import { FieldsService } from "../fields/fields.service";
+import {
+	archivedFilter,
 	countsByKey,
-	FACET_ALL,
 	FACET_UNASSIGNED,
 	type ListResult,
+	type OrderByColumns,
+	ownerFilter,
 	paginate,
 	resolveOrderBy,
 } from "../trpc/list-input";
-import {
-	CLOSED_DEAL_STAGES,
-	isClosedStage,
-	LOSING_DEAL_STAGES,
-	OPEN_DEAL_STAGES,
-} from "./deal-stage";
 import type {
 	ClosingWindow,
+	DealAttachContactInput,
+	DealBulkOwnerInput,
+	DealBulkStageInput,
+	DealContactRoleInput,
 	DealCreateInput,
+	DealDetachContactInput,
 	DealListInput,
 	DealUpdateInput,
 	SetStageInput,
@@ -57,20 +76,27 @@ const COMPANY_SELECT = {
 	logoUrl: true,
 } as const;
 
+const CONTACT_SELECT = {
+	id: true,
+	firstName: true,
+	lastName: true,
+	email: true,
+	title: true,
+	imageUrl: true,
+} as const;
+
 const LOSING = new Set<DealStage>(LOSING_DEAL_STAGES);
 
-const SORTABLE: Record<
-	string,
-	(dir: Prisma.SortOrder) => Prisma.DealOrderByWithRelationInput[]
-> = {
+const SORTABLE: OrderByColumns<Prisma.DealOrderByWithRelationInput[]> = {
 	name: (dir) => [{ name: dir }],
 	company: (dir) => [{ company: { name: dir } }, { name: "asc" }],
 	stage: (dir) => [{ stage: dir }, { expectedCloseDate: "asc" }],
-	amount: (dir) => [{ amount: dir }],
+	amount: (dir) => [{ baseAmount: { sort: dir, nulls: "last" } }],
 	expectedCloseDate: (dir) => [{ expectedCloseDate: dir }],
 	createdAt: (dir) => [{ createdAt: dir }],
 	owner: (dir) => [{ owner: { name: dir } }, { name: "asc" }],
 	lastActivity: (dir) => [{ lastActivityAt: { sort: dir, nulls: "last" } }],
+	archivedAt: (dir) => [{ archivedAt: { sort: dir, nulls: "last" } }],
 };
 
 @Injectable()
@@ -79,95 +105,118 @@ export class DealsService {
 
 	constructor(
 		@InjectDatabase() private readonly db: Db,
+		private readonly agent: AgentTriggerService,
 		private readonly stamp: ActivityStampService,
+		private readonly conversion: ConversionService,
+		private readonly fields: FieldsService,
 	) {}
 
 	async list(input: DealListInput) {
-		const where = this.buildWhere(input);
+		const filterableFields = await this.fields.filterableFieldsFor("DEAL");
+		const where = this.buildWhere(input, filterableFields);
 		const { skip, take } = paginate(input);
 
-		const [rows, total, facetCounts, openValue] = await Promise.all([
-			this.db.deal.findMany({
-				where,
-				skip,
-				take,
-				orderBy: resolveOrderBy(input, SORTABLE, [{ createdAt: "desc" }]),
-				select: {
-					id: true,
-					name: true,
-					stage: true,
-					amount: true,
-					currency: true,
-					expectedCloseDate: true,
-					closedAt: true,
-					company: { select: COMPANY_SELECT },
-					owner: { select: OWNER_SELECT },
-					lastActivityAt: true,
-					createdAt: true,
-				},
-			}),
-			this.db.deal.count({ where }),
-			this.facetCounts(input),
-			this.db.deal.aggregate({
-				where: { ...where, stage: { in: [...OPEN_DEAL_STAGES] } },
-				_sum: { amount: true },
-			}),
-		]);
+		const openWhere = { ...where, stage: { in: [...OPEN_DEAL_STAGES] } };
+		const base = await this.conversion.reportingCurrency();
+
+		const [rows, total, facetCounts, openValue, unconverted] =
+			await Promise.all([
+				this.db.deal.findMany({
+					where,
+					skip,
+					take,
+					orderBy: resolveOrderBy(input, SORTABLE, [{ createdAt: "desc" }]),
+					select: {
+						id: true,
+						name: true,
+						stage: true,
+						amount: true,
+						currency: true,
+						baseAmount: true,
+						expectedCloseDate: true,
+						closedAt: true,
+						company: { select: COMPANY_SELECT },
+						owner: { select: OWNER_SELECT },
+						lastActivityAt: true,
+						createdAt: true,
+						archivedAt: true,
+					},
+				}),
+				this.db.deal.count({ where }),
+				this.facetCounts(input, filterableFields),
+				this.db.deal.aggregate({
+					where: { AND: [openWhere, this.conversion.countedWhere(base)] },
+					_sum: { baseAmount: true },
+				}),
+				this.conversion.unconverted(openWhere),
+			]);
+
+		const tableFields = await this.fields.tableValuesFor(
+			"DEAL",
+			rows.map((row) => row.id),
+		);
 
 		return {
 			rows: rows.map(
 				({
 					amount,
+					baseAmount,
 					expectedCloseDate,
 					closedAt,
 					lastActivityAt,
 					createdAt,
+					archivedAt,
 					...row
 				}) => ({
 					...row,
 					amountCents: toCents(amount),
+					baseAmountCents: toCents(baseAmount),
 					expectedCloseDate: expectedCloseDate?.toISOString() ?? null,
 					closedAt: closedAt?.toISOString() ?? null,
 					lastActivityAt: lastActivityAt?.toISOString() ?? null,
 					createdAt: createdAt.toISOString(),
+					archivedAt: archivedAt?.toISOString() ?? null,
+					fields: tableFields.get(row.id) ?? {},
 				}),
 			),
 			total,
 			facetCounts,
-			openValueCents: toCents(openValue._sum.amount),
-		} satisfies ListResult<unknown> & { openValueCents: number | null };
+			openValueCents: toCents(openValue._sum.baseAmount),
+			reportingCurrency: base,
+			unconverted,
+		} satisfies ListResult<unknown> & {
+			openValueCents: number | null;
+			reportingCurrency: string;
+			unconverted: { count: number; currencies: string[] };
+		};
 	}
 
 	async byId(id: string) {
+		const reportingCurrency = await this.conversion.reportingCurrency();
 		const deal = await this.db.deal.findUnique({
 			where: { id },
 			select: {
 				id: true,
 				name: true,
+				description: true,
 				stage: true,
 				stageChangedAt: true,
 				amount: true,
 				currency: true,
+				baseAmount: true,
+				baseCurrency: true,
+				fxRate: true,
+				fxRateAt: true,
 				expectedCloseDate: true,
 				closedAt: true,
 				closedReason: true,
 				createdAt: true,
+				archivedAt: true,
 				company: { select: { ...COMPANY_SELECT, industry: true } },
 				owner: { select: OWNER_SELECT },
 				contacts: {
-					select: {
-						role: true,
-						contact: {
-							select: {
-								id: true,
-								firstName: true,
-								lastName: true,
-								email: true,
-								title: true,
-								imageUrl: true,
-							},
-						},
-					},
+					select: { role: true, contact: { select: CONTACT_SELECT } },
+					orderBy: { contact: { firstName: "asc" } },
 				},
 			},
 		});
@@ -176,15 +225,37 @@ export class DealsService {
 			throw new NotFoundException(`No deal with id ${id}.`);
 		}
 
-		const { contacts, amount, ...rest } = deal;
+		const {
+			contacts,
+			amount,
+			baseAmount,
+			baseCurrency,
+			fxRate,
+			fxRateAt,
+			archivedAt,
+			...rest
+		} = deal;
 
 		return {
 			...rest,
+			fields: await this.fields.valuesFor("DEAL", id),
 			amountCents: toCents(amount),
+			baseAmountCents:
+				baseCurrency === reportingCurrency ? toCents(baseAmount) : null,
+			reportingCurrency,
+			fxRate:
+				baseCurrency === reportingCurrency
+					? (fxRate?.toNumber() ?? null)
+					: null,
+			fxRateAt:
+				baseCurrency === reportingCurrency
+					? (fxRateAt?.toISOString() ?? null)
+					: null,
 			stageChangedAt: deal.stageChangedAt.toISOString(),
 			expectedCloseDate: deal.expectedCloseDate?.toISOString() ?? null,
 			closedAt: deal.closedAt?.toISOString() ?? null,
 			createdAt: deal.createdAt.toISOString(),
+			archivedAt: archivedAt?.toISOString() ?? null,
 			contacts: contacts.map(({ role, contact }) => ({ ...contact, role })),
 		};
 	}
@@ -194,23 +265,51 @@ export class DealsService {
 		const closed = isClosedStage(stage);
 		const now = new Date();
 
+		const currency = normalizeCurrency(
+			input.currency ?? (await this.conversion.reportingCurrency()),
+		);
+		const fx = await this.conversion.dealFields(
+			decimalFromCents(input.amountCents),
+			currency,
+		);
+
 		try {
-			const deal = await this.db.deal.create({
-				data: {
-					name: input.name.trim(),
-					companyId: input.companyId,
-					ownerId: input.ownerId,
-					stage,
-					stageChangedAt: now,
-					closedAt: closed ? now : null,
-					amount: fromCents(input.amountCents),
-					currency: input.currency ?? "USD",
-					expectedCloseDate: parseDate(input.expectedCloseDate),
-				},
-				select: { id: true, name: true, companyId: true },
+			const deal = await this.agent.withCrmEvents(async (tx, emit) => {
+				const created = await tx.deal.create({
+					data: {
+						name: input.name.trim(),
+						companyId: input.companyId,
+						ownerId: input.ownerId,
+						stage,
+						stageChangedAt: now,
+						closedAt: closed ? now : null,
+						amount: fromCents(input.amountCents),
+						currency,
+						...fx,
+						expectedCloseDate: parseDate(input.expectedCloseDate),
+					},
+					select: { id: true, name: true, companyId: true },
+				});
+				await emit({
+					type: "deal.created",
+					record: { kind: "deal", id: created.id },
+					occurredAt: now,
+					data: { companyId: created.companyId, stage },
+				});
+				if (closed) {
+					await emit({
+						type: "deal.closed",
+						record: { kind: "deal", id: created.id },
+						occurredAt: now,
+						data: { companyId: created.companyId, from: null, to: stage },
+					});
+				}
+				return created;
 			});
 
 			this.logger.log({ message: "Deal created", dealId: deal.id, stage });
+
+			void this.fields.queueBackfillForNewRecord("DEAL", deal.id);
 
 			return deal;
 		} catch (error) {
@@ -222,6 +321,10 @@ export class DealsService {
 		const data: Prisma.DealUpdateInput = {};
 
 		if (input.name !== undefined) data.name = input.name.trim();
+		if (input.description !== undefined) {
+			data.description =
+				input.description === null ? null : blankToNull(input.description);
+		}
 		if (input.companyId !== undefined) {
 			data.company = { connect: { id: input.companyId } };
 		}
@@ -231,28 +334,114 @@ export class DealsService {
 		if (input.amountCents !== undefined) {
 			data.amount = fromCents(input.amountCents);
 		}
-		if (input.currency !== undefined) data.currency = input.currency;
+		if (input.currency !== undefined) {
+			data.currency = normalizeCurrency(input.currency);
+		}
 		if (input.expectedCloseDate !== undefined) {
 			data.expectedCloseDate = parseDate(input.expectedCloseDate);
 		}
 
-		try {
-			return await this.db.deal.update({
+		if (input.amountCents !== undefined || input.currency !== undefined) {
+			const current = await this.db.deal.findUnique({
 				where: { id },
-				data,
-				select: { id: true, name: true },
+				select: { amount: true, currency: true },
+			});
+
+			if (!current) {
+				throw new NotFoundException(`No deal with id ${id}.`);
+			}
+
+			const amount =
+				input.amountCents !== undefined
+					? decimalFromCents(input.amountCents)
+					: current.amount;
+			const currency =
+				input.currency !== undefined
+					? normalizeCurrency(input.currency)
+					: normalizeCurrency(current.currency);
+
+			Object.assign(data, await this.conversion.dealFields(amount, currency));
+		}
+
+		try {
+			return await this.db.$transaction(async (tx) => {
+				if (input.fields) {
+					await this.fields.applyValues(tx, "DEAL", id, input.fields);
+				}
+
+				return tx.deal.update({
+					where: { id },
+					data,
+					select: { id: true, name: true },
+				});
 			});
 		} catch (error) {
 			throw this.translate(error, id);
 		}
 	}
 
-	async delete(id: string): Promise<{ id: string; name: string }> {
-		let deleted: { targets: StampTargets; name: string };
+	async archive(id: string): Promise<{ id: string; name: string }> {
+		try {
+			const deal = await this.db.deal.update({
+				where: { id },
+				data: { archivedAt: new Date() },
+				select: { name: true },
+			});
+
+			this.logger.log({ message: "Deal archived", dealId: id });
+
+			return { id, name: deal.name };
+		} catch (error) {
+			throw this.translate(error, id);
+		}
+	}
+
+	async restore(id: string): Promise<{ id: string; name: string }> {
+		try {
+			const deal = await this.db.deal.update({
+				where: { id },
+				data: { archivedAt: null },
+				select: { name: true },
+			});
+
+			this.logger.log({ message: "Deal restored", dealId: id });
+
+			return { id, name: deal.name };
+		} catch (error) {
+			throw this.translate(error, id);
+		}
+	}
+
+	async purge(id: string): Promise<{ id: string; name: string }>;
+	async purge(
+		id: string,
+		guard: { archivedBefore: Date },
+	): Promise<{ id: string; name: string } | null>;
+	async purge(
+		id: string,
+		guard?: { archivedBefore: Date },
+	): Promise<{ id: string; name: string } | null> {
+		let deleted: { targets: StampTargets; name: string } | null;
 
 		try {
 			deleted = await this.db.$transaction(async (tx) => {
+				const [row] = await tx.$queryRaw<Array<{ archivedAt: Date | null }>>`
+					SELECT "archivedAt" FROM deal WHERE id = ${id} FOR UPDATE
+				`;
+
+				if (!row) {
+					if (guard) return null;
+					throw new NotFoundException(`No deal with id ${id}.`);
+				}
+				if (
+					guard &&
+					(!row.archivedAt || row.archivedAt > guard.archivedBefore)
+				) {
+					return null;
+				}
+
 				const targets = await this.stamp.targetsOf({ dealId: id }, tx);
+				await tx.agentTask.deleteMany({ where: { dealId: id } });
 
 				const deal = await tx.deal.delete({
 					where: { id },
@@ -265,10 +454,12 @@ export class DealsService {
 			throw this.translate(error, id);
 		}
 
+		if (!deleted) return null;
+
 		await this.stamp.recomputeAfterDelete(deleted.targets, { dealId: id });
 
 		this.logger.log({
-			message: "Deal deleted",
+			message: "Deal purged",
 			dealId: id,
 			name: deleted.name,
 		});
@@ -276,32 +467,52 @@ export class DealsService {
 		return { id, name: deleted.name };
 	}
 
-	async setStage(input: SetStageInput, actingUserId: string) {
-		const deal = await this.db.deal.findUnique({
-			where: { id: input.id },
-			select: { id: true, stage: true, companyId: true },
+	async purgeExpired(before: Date): Promise<BulkResult> {
+		const expired = await this.db.deal.findMany({
+			where: { archivedAt: { lte: before } },
+			select: { id: true },
+			take: ARCHIVE.prune.maxBatch,
 		});
 
-		if (!deal) {
-			throw new NotFoundException(`No deal with id ${input.id}.`);
-		}
+		return runBulk(
+			expired.map((row) => row.id),
+			(id) => this.purge(id, { archivedBefore: before }),
+		);
+	}
 
-		if (deal.stage === input.stage) {
-			return { id: deal.id, stage: deal.stage, changed: false };
-		}
-
+	async setStage(input: SetStageInput, actingUserId: string) {
 		const closedReason = input.closedReason?.trim();
-		if (LOSING.has(input.stage) && !closedReason) {
-			throw new BadRequestException(
-				"Say why it was lost — a closed-lost deal with no reason teaches nobody anything.",
-			);
-		}
-
-		const now = new Date();
 		const closed = isClosedStage(input.stage);
+		const transition = await this.agent.withCrmEvents(async (tx, emit) => {
+			const [deal] = await tx.$queryRaw<
+				Array<{ id: string; stage: DealStage; companyId: string }>
+			>`
+				SELECT id, stage, "companyId"
+				FROM deal
+				WHERE id = ${input.id}
+				FOR UPDATE
+			`;
 
-		const [updated] = await this.db.$transaction([
-			this.db.deal.update({
+			if (!deal) {
+				throw new NotFoundException(`No deal with id ${input.id}.`);
+			}
+
+			if (deal.stage === input.stage) {
+				return {
+					changed: false as const,
+					deal,
+					updated: { id: deal.id, stage: deal.stage },
+					now: null,
+				};
+			}
+			if (LOSING.has(input.stage) && !closedReason) {
+				throw new BadRequestException(
+					"Say why it was lost. A closed-lost deal with no reason teaches nobody anything.",
+				);
+			}
+
+			const now = new Date();
+			const updated = await tx.deal.update({
 				where: { id: input.id },
 				data: {
 					stage: input.stage,
@@ -310,8 +521,8 @@ export class DealsService {
 					closedReason: closed ? (closedReason ?? null) : null,
 				},
 				select: { id: true, stage: true },
-			}),
-			this.db.activity.create({
+			});
+			await tx.activity.create({
 				data: {
 					type: ActivityType.STAGE_CHANGE,
 					subject: "Stage changed",
@@ -322,13 +533,48 @@ export class DealsService {
 					createdById: actingUserId,
 					meta: { from: deal.stage, to: input.stage },
 				},
-			}),
-		]);
+			});
+			await emit({
+				type: "deal.stage.changed",
+				record: { kind: "deal", id: deal.id },
+				occurredAt: now,
+				data: { companyId: deal.companyId, from: deal.stage, to: input.stage },
+			});
+			if (!isClosedStage(deal.stage) && closed) {
+				await emit({
+					type: "deal.closed",
+					record: { kind: "deal", id: deal.id },
+					occurredAt: now,
+					data: {
+						companyId: deal.companyId,
+						from: deal.stage,
+						to: input.stage,
+					},
+				});
+			}
+			if (isClosedStage(deal.stage) && !closed) {
+				await emit({
+					type: "deal.opened",
+					record: { kind: "deal", id: deal.id },
+					occurredAt: now,
+					data: {
+						companyId: deal.companyId,
+						from: deal.stage,
+						to: input.stage,
+					},
+				});
+			}
 
-		await this.stamp.touch(
-			{ companyId: deal.companyId, dealId: deal.id },
-			new Date(),
-		);
+			return { changed: true as const, deal, updated, now };
+		});
+
+		if (!transition.changed) {
+			return { ...transition.updated, changed: false };
+		}
+
+		const { deal, updated, now } = transition;
+
+		await this.stamp.touch({ companyId: deal.companyId, dealId: deal.id }, now);
 
 		this.logger.log({
 			message: "Deal stage changed",
@@ -338,6 +584,165 @@ export class DealsService {
 		});
 
 		return { ...updated, changed: true };
+	}
+
+	async contactOptions(dealId: string) {
+		const deal = await this.db.deal.findUnique({
+			where: { id: dealId },
+			select: { companyId: true, contacts: { select: { contactId: true } } },
+		});
+
+		if (!deal) {
+			throw new NotFoundException(`No deal with id ${dealId}.`);
+		}
+
+		return this.db.contact.findMany({
+			where: {
+				companyId: deal.companyId,
+				id: { notIn: deal.contacts.map((row) => row.contactId) },
+			},
+			select: CONTACT_SELECT,
+			orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+			take: 100,
+		});
+	}
+
+	async attachContact(input: DealAttachContactInput) {
+		const company = await this.companyOf(input.dealId);
+		const contact = await this.db.contact.findUnique({
+			where: { id: input.contactId },
+			select: { companyId: true },
+		});
+
+		if (!contact) {
+			throw new NotFoundException(`No contact with id ${input.contactId}.`);
+		}
+
+		if (contact.companyId !== company.id) {
+			throw new BadRequestException(
+				`That contact does not work at ${company.name}.`,
+			);
+		}
+
+		const role = roleOrNull(input.role ?? null);
+
+		await this.db.dealContact.upsert({
+			where: {
+				dealId_contactId: {
+					dealId: input.dealId,
+					contactId: input.contactId,
+				},
+			},
+			create: { dealId: input.dealId, contactId: input.contactId, role },
+			update: role === null ? {} : { role },
+		});
+
+		this.logger.log({
+			message: "Contact attached to deal",
+			dealId: input.dealId,
+			contactId: input.contactId,
+		});
+
+		return { dealId: input.dealId, contactId: input.contactId };
+	}
+
+	async detachContact(input: DealDetachContactInput) {
+		const { count } = await this.db.dealContact.deleteMany({
+			where: { dealId: input.dealId, contactId: input.contactId },
+		});
+
+		if (count === 0) {
+			throw new NotFoundException("That contact is not on this deal.");
+		}
+
+		this.logger.log({
+			message: "Contact detached from deal",
+			dealId: input.dealId,
+			contactId: input.contactId,
+		});
+
+		return { dealId: input.dealId, contactId: input.contactId };
+	}
+
+	async setContactRole(input: DealContactRoleInput) {
+		const role = roleOrNull(input.role);
+
+		const { count } = await this.db.dealContact.updateMany({
+			where: { dealId: input.dealId, contactId: input.contactId },
+			data: { role },
+		});
+
+		if (count === 0) {
+			throw new NotFoundException("That contact is not on this deal.");
+		}
+
+		return { dealId: input.dealId, contactId: input.contactId, role };
+	}
+
+	async bulkAssignOwner(input: DealBulkOwnerInput): Promise<BulkResult> {
+		await requireOwner(this.db, input.ownerId);
+
+		const ids = [...new Set(input.ids)];
+		const { count } = await this.db.deal.updateMany({
+			where: { id: { in: ids } },
+			data: { ownerId: input.ownerId },
+		});
+
+		this.logger.log({
+			message: "Deals reassigned",
+			count,
+			ownerId: input.ownerId,
+		});
+
+		return {
+			requested: ids.length,
+			succeeded: count,
+			skipped: 0,
+			failed: ids.length - count,
+			message: null,
+		};
+	}
+
+	async bulkSetStage(
+		input: DealBulkStageInput,
+		actingUserId: string,
+	): Promise<BulkResult> {
+		const closedReason = input.closedReason?.trim();
+
+		if (LOSING.has(input.stage) && !closedReason) {
+			throw new BadRequestException(
+				"Say why they were lost. A closed-lost deal with no reason teaches nobody anything.",
+			);
+		}
+
+		return runBulk(input.ids, (id) =>
+			this.setStage({ id, stage: input.stage, closedReason }, actingUserId),
+		);
+	}
+
+	async bulkArchive(ids: string[]): Promise<BulkResult> {
+		return runBulk(ids, (id) => this.archive(id));
+	}
+
+	async bulkRestore(ids: string[]): Promise<BulkResult> {
+		return runBulk(ids, (id) => this.restore(id));
+	}
+
+	async bulkPurge(ids: string[]): Promise<BulkResult> {
+		return runBulk(ids, (id) => this.purge(id));
+	}
+
+	private async companyOf(dealId: string) {
+		const deal = await this.db.deal.findUnique({
+			where: { id: dealId },
+			select: { company: { select: { id: true, name: true } } },
+		});
+
+		if (!deal) {
+			throw new NotFoundException(`No deal with id ${dealId}.`);
+		}
+
+		return deal.company;
 	}
 
 	private searchFilter(q: string): Prisma.DealWhereInput {
@@ -352,39 +757,54 @@ export class DealsService {
 		};
 	}
 
-	private buildWhere(input: DealListInput): Prisma.DealWhereInput {
-		const where: Prisma.DealWhereInput = this.searchFilter(input.q);
+	private buildWhere(
+		input: DealListInput,
+		filterableFields: FieldDefinitionWithOptions[],
+	): Prisma.DealWhereInput {
+		const and: Prisma.DealWhereInput[] = [
+			this.searchFilter(input.q),
+			archivedFilter(input.archived),
+			...this.fields.fieldFilters(filterableFields, input.fields),
+		];
 
-		if (input.owner !== FACET_ALL) {
-			where.ownerId =
-				input.owner === FACET_UNASSIGNED ? { in: [] } : input.owner;
-		}
+		const owner = ownerFilter<Prisma.DealWhereInput>(input.owner);
+		if (owner) and.push(owner);
 
 		if (input.status === "open") {
-			where.stage = { in: [...OPEN_DEAL_STAGES] };
+			and.push({ stage: { in: [...OPEN_DEAL_STAGES] } });
 		} else if (input.status === "closed") {
-			where.stage = { in: [...CLOSED_DEAL_STAGES] };
+			and.push({ stage: { in: [...CLOSED_DEAL_STAGES] } });
 		}
 
-		if (input.stage !== FACET_ALL) {
-			where.stage = input.stage as DealStage;
+		if (input.stage.length > 0) {
+			and.push({ stage: { in: input.stage as DealStage[] } });
 		}
 
-		if (input.closing !== FACET_ALL) {
-			Object.assign(where, closingFilter(input.closing as ClosingWindow));
+		if (input.closing.length > 0) {
+			and.push({
+				OR: input.closing.map((window) =>
+					closingFilter(window as ClosingWindow),
+				),
+			});
 		}
 
-		return where;
+		return { AND: and };
 	}
 
-	private async facetCounts(input: DealListInput) {
-		const where = this.searchFilter(input.q);
+	private async facetCounts(
+		input: DealListInput,
+		filterableFields: FieldDefinitionWithOptions[],
+	) {
+		const where: Prisma.DealWhereInput = {
+			AND: [this.searchFilter(input.q), archivedFilter(input.archived)],
+		};
 
-		const [owners, stages, ...closingCounts] = await Promise.all([
+		const [owners, stages, fieldFacets, ...closingCounts] = await Promise.all([
 			this.db.deal.groupBy({ by: ["ownerId"], where, _count: { _all: true } }),
 			this.db.deal.groupBy({ by: ["stage"], where, _count: { _all: true } }),
+			this.fields.filterFacetCounts("DEAL", where, filterableFields),
 			...CLOSING_WINDOWS.map((window) =>
-				this.db.deal.count({ where: { ...where, ...closingFilter(window) } }),
+				this.db.deal.count({ where: { AND: [where, closingFilter(window)] } }),
 			),
 		]);
 
@@ -408,29 +828,35 @@ export class DealsService {
 					closingCounts[index] ?? 0,
 				]),
 			),
+			...Object.fromEntries(
+				Object.entries(fieldFacets).map(([key, counts]) => [
+					`field:${key}`,
+					counts,
+				]),
+			),
 		};
 	}
 
-	private translate(error: unknown, id: string): unknown {
+	private translate(cause: unknown, id: string): never {
 		if (
-			error instanceof PrismaNamespace.PrismaClientKnownRequestError &&
-			error.code === "P2025"
+			cause instanceof PrismaNamespace.PrismaClientKnownRequestError &&
+			cause.code === "P2025"
 		) {
-			return new NotFoundException(`No deal with id ${id}.`);
+			throw new NotFoundException(`No deal with id ${id}.`);
 		}
-		return this.translateRelations(error);
+		return this.translateRelations(cause);
 	}
 
-	private translateRelations(error: unknown): unknown {
+	private translateRelations(cause: unknown): never {
 		if (
-			error instanceof PrismaNamespace.PrismaClientKnownRequestError &&
-			(error.code === "P2003" || error.code === "P2025")
+			cause instanceof PrismaNamespace.PrismaClientKnownRequestError &&
+			(cause.code === "P2003" || cause.code === "P2025")
 		) {
-			return new BadRequestException(
+			throw new BadRequestException(
 				"That company or owner does not exist any more.",
 			);
 		}
-		return error;
+		throw cause;
 	}
 }
 
@@ -459,6 +885,10 @@ function closingFilter(window: ClosingWindow): Prisma.DealWhereInput {
 		case "none":
 			return { expectedCloseDate: null };
 	}
+}
+
+function roleOrNull(value: string | null): string | null {
+	return value === null ? null : blankToNull(value);
 }
 
 function parseDate(value: string | null | undefined): Date | null {

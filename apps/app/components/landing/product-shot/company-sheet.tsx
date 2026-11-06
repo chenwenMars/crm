@@ -1,10 +1,12 @@
-import Close from "@carbon/icons-react/es/Close";
-import MagicWand from "@carbon/icons-react/es/MagicWand";
-import OverflowMenuVertical from "@carbon/icons-react/es/OverflowMenuVertical";
-import Renew from "@carbon/icons-react/es/Renew";
-import Send from "@carbon/icons-react/es/Send";
 import Logo from "@crm/ui/components/logo";
 import { cn } from "@crm/ui/lib/utils";
+import {
+	ArrowUpIcon,
+	EllipsisVerticalIcon,
+	RefreshCwIcon,
+	WandSparklesIcon,
+	XIcon,
+} from "lucide-react";
 import Image from "next/image";
 import { OWNER } from "./companies";
 import { CompanyMark } from "./company-mark";
@@ -20,7 +22,7 @@ const TABS = [
 const STATS = [
 	{ label: "Open pipeline", value: "$0" },
 	{ label: "Open deals", value: "0" },
-	{ label: "Next close", value: "—", muted: true },
+	{ label: "Next close", value: "", muted: true },
 ];
 
 const QUESTIONS = [
@@ -45,7 +47,7 @@ export function CompanySheet() {
 	);
 }
 
-export function SheetHeader({ compact }: { compact?: boolean }) {
+function SheetHeader({ compact }: { compact?: boolean }) {
 	return (
 		<div
 			className={cn(
@@ -60,30 +62,31 @@ export function SheetHeader({ compact }: { compact?: boolean }) {
 					<p className="mb-0.5 font-medium text-lg/[125%] tracking-[-0.45px]">
 						Comp AI
 					</p>
-					<p className="text-muted-foreground text-xs/[162.5%]">
-						trycomp.ai · Compliance
+					<p className="flex gap-x-3 text-muted-foreground text-xs/[162.5%]">
+						<span>trycomp.ai</span>
+						<span>Compliance</span>
 					</p>
 				</div>
 
 				<div className="flex shrink-0 items-center gap-1">
 					{compact ? null : (
 						<span className="flex h-7 items-center gap-1 rounded-md border border-border bg-muted pr-2.5 pl-1.5 font-medium text-xs/[133%] shadow-2xs">
-							<Renew size={14} className="shrink-0" />
+							<RefreshCwIcon size={14} className="shrink-0" />
 							Re-enrich
 						</span>
 					)}
 					<span className="flex h-7 items-center gap-1 rounded-md bg-primary pr-2.5 pl-1.5 font-medium text-primary-foreground text-xs/[133%] shadow-2xs">
-						<MagicWand size={14} className="shrink-0" />
+						<WandSparklesIcon size={14} className="shrink-0" />
 						Research
 					</span>
 					{compact ? null : (
 						<>
 							<span className="flex size-7 items-center justify-center rounded-md">
-								<OverflowMenuVertical size={16} />
+								<EllipsisVerticalIcon size={16} />
 							</span>
 							<span className="mx-1 h-5 w-px shrink-0 bg-border" />
 							<span className="flex size-7 items-center justify-center rounded-md">
-								<Close size={16} />
+								<XIcon size={16} />
 							</span>
 						</>
 					)}
@@ -93,7 +96,7 @@ export function SheetHeader({ compact }: { compact?: boolean }) {
 	);
 }
 
-export function SheetStats({ compact }: { compact?: boolean }) {
+function SheetStats({ compact }: { compact?: boolean }) {
 	if (compact) {
 		return (
 			<div className="grid shrink-0 grid-cols-2 border-border border-b bg-muted/40">
@@ -165,7 +168,7 @@ function Stat({
 	);
 }
 
-export function SheetTabs({ compact }: { compact?: boolean }) {
+function SheetTabs({ compact }: { compact?: boolean }) {
 	return (
 		<div
 			className={cn(
@@ -192,7 +195,7 @@ export function SheetTabs({ compact }: { compact?: boolean }) {
 	);
 }
 
-export function AgentEmptyState({ compact }: { compact?: boolean }) {
+function AgentEmptyState({ compact }: { compact?: boolean }) {
 	return (
 		<div
 			className={cn(
@@ -231,7 +234,7 @@ export function AgentEmptyState({ compact }: { compact?: boolean }) {
 	);
 }
 
-export function SheetComposer({ compact }: { compact?: boolean }) {
+function SheetComposer({ compact }: { compact?: boolean }) {
 	return (
 		<div
 			className={cn(
@@ -245,7 +248,7 @@ export function SheetComposer({ compact }: { compact?: boolean }) {
 				</span>
 			</div>
 			<span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
-				<Send size={14} />
+				<ArrowUpIcon size={14} />
 			</span>
 		</div>
 	);

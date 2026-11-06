@@ -1,6 +1,5 @@
 "use client";
 
-import OverflowMenuHorizontal from "@carbon/icons-react/es/OverflowMenuHorizontal";
 import { Button } from "@crm/ui/components/button";
 import {
 	DataTable,
@@ -15,11 +14,12 @@ import {
 } from "@crm/ui/components/dropdown-menu";
 import { Icon } from "@crm/ui/components/icon";
 import { PersonAvatar } from "@crm/ui/components/person-avatar";
-import { relativeTimeFromIso } from "@crm/ui/lib/format";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { EllipsisIcon } from "lucide-react";
 import { toast } from "sonner";
 import { ListSearch } from "@/components/data-table/list-search";
 import { useTableQuery } from "@/components/data-table/use-table-query";
+import { LocalRelativeTime } from "@/components/local-date-time";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
@@ -46,7 +46,6 @@ function columns(
 			header: "Name",
 			sortable: true,
 			hideable: false,
-			width: "w-[34%]",
 			cell: (row) => (
 				<span className="flex min-w-0 items-center gap-2">
 					<PersonAvatar
@@ -66,7 +65,7 @@ function columns(
 			id: "email",
 			header: "Email",
 			sortable: true,
-			width: "w-[32%]",
+			width: "56",
 			hideBelow: "md",
 			cell: (row) => (
 				<span className="truncate text-muted-foreground">{row.email}</span>
@@ -76,7 +75,7 @@ function columns(
 			id: "role",
 			header: "Role",
 			sortable: true,
-			width: "w-[14%]",
+			width: "28",
 			cell: (row) => (
 				<span className="text-muted-foreground">{ROLE_LABEL[row.role]}</span>
 			),
@@ -87,11 +86,11 @@ function columns(
 			label: "Joined date",
 			sortable: true,
 			align: "right",
-			width: "w-[14%]",
+			width: "28",
 			hideBelow: "sm",
 			cell: (row) => (
-				<span className="text-muted-foreground" suppressHydrationWarning>
-					{relativeTimeFromIso(row.joinedAt)}
+				<span className="text-muted-foreground">
+					<LocalRelativeTime date={row.joinedAt} />
 				</span>
 			),
 		},
@@ -101,13 +100,13 @@ function columns(
 			label: "Actions",
 			hideable: false,
 			align: "right",
-			width: "w-[6%]",
+			width: "12",
 			cell: (row) =>
 				canChangeRoles ? (
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
 							<Button variant="ghost" size="icon" disabled={pending}>
-								<Icon icon={OverflowMenuHorizontal} />
+								<Icon icon={EllipsisIcon} />
 								<span className="sr-only">Change {row.name}'s role</span>
 							</Button>
 						</DropdownMenuTrigger>
@@ -159,16 +158,19 @@ export function MembersTable() {
 		{
 			id: "role",
 			label: "Role",
-			options: (Object.keys(ROLE_LABEL) as Role[])
-				.map((role) => ({ value: role, label: ROLE_LABEL[role] }))
-				.filter((option) => (facetCounts?.role?.[option.value] ?? 0) > 0),
+			options: (Object.keys(ROLE_LABEL) as Role[]).flatMap((role) =>
+				(facetCounts?.role?.[role] ?? 0) > 0
+					? [{ value: role, label: ROLE_LABEL[role] }]
+					: [],
+			),
 		},
 	];
 
 	return (
 		<DataTable
+			label="Members"
 			query={query}
-			search={<ListSearch placeholder="Search by name or email…" />}
+			search={<ListSearch placeholder="Search members…" />}
 			columns={columns(
 				workspace.data?.canChangeRoles ?? false,
 				(member, role) => setRole.mutate({ memberId: member.id, role }),

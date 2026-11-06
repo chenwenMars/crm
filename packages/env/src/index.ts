@@ -5,7 +5,7 @@ const FILES = [".env", ".env.local"] as const;
 
 let loaded = false;
 
-function findWorkspaceRoot(start: string): string | null {
+export function findWorkspaceRoot(start: string): string | null {
 	let directory = resolve(start);
 
 	for (;;) {
@@ -24,8 +24,7 @@ function isWorkspaceRoot(directory: string): boolean {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(manifest, "utf8"));
 		return (
-			typeof parsed === "object" &&
-			parsed !== null &&
+			parsed instanceof Object &&
 			"workspaces" in parsed &&
 			parsed.workspaces !== undefined
 		);
@@ -34,8 +33,10 @@ function isWorkspaceRoot(directory: string): boolean {
 	}
 }
 
-export function parseEnv(source: string): Record<string, string> {
-	const values: Record<string, string> = {};
+type EnvValues = Record<string, string>;
+
+export function parseEnv(source: string): EnvValues {
+	const values: EnvValues = {};
 
 	for (const rawLine of source.split(/\r?\n/)) {
 		const line = rawLine.trim();
@@ -78,14 +79,15 @@ export function loadRootEnv(): void {
 	const root = findWorkspaceRoot(process.cwd());
 	if (!root) return;
 
-	const merged: Record<string, string> = {};
+	const merged: EnvValues = {};
+	const runtimeFs = process.getBuiltinModule("node:fs");
 
 	for (const file of FILES) {
-		const path = join(root, file);
-		if (!existsSync(path)) continue;
-
 		try {
-			Object.assign(merged, parseEnv(readFileSync(path, "utf8")));
+			Object.assign(
+				merged,
+				parseEnv(runtimeFs.readFileSync(join(root, file), "utf8")),
+			);
 		} catch {}
 	}
 

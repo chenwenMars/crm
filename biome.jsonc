@@ -1,5 +1,5 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
 	"vcs": {
 		"enabled": true,
 		"clientKind": "git",
@@ -17,6 +17,7 @@
 			"!**/*.svg",
 			"!.claude",
 			"!.agents",
+			"!tools/oxlint/anti-slop",
 			"!skills-lock.json"
 		]
 	},
@@ -27,7 +28,21 @@
 	"linter": {
 		"enabled": true,
 		"rules": {
-			"preset": "recommended"
+			"preset": "recommended",
+			"complexity": {
+				"noExcessiveLinesPerFunction": {
+					"level": "error",
+					"options": { "maxLines": 620, "skipBlankLines": true }
+				},
+				"noExcessiveCognitiveComplexity": {
+					"level": "error",
+					"options": { "maxAllowedComplexity": 62 }
+				}
+			},
+			"performance": {
+				"noBarrelFile": "warn",
+				"noReExportAll": "warn"
+			}
 		}
 	},
 	"css": {
@@ -53,6 +68,37 @@
 	},
 	"overrides": [
 		{
+			"includes": ["packages/ui/src/components/dashboard-chart.tsx"],
+			"linter": {
+				"rules": {
+					"a11y": {
+						"useSemanticElements": "off",
+						"noNoninteractiveTabindex": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["packages/ui/src/components/data-table.tsx"],
+			"linter": {
+				"rules": {
+					"a11y": {
+						"noNoninteractiveTabindex": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["packages/ui/src/styles/reduced-motion.css"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noImportantStyles": "off"
+					}
+				}
+			}
+		},
+		{
 			"includes": ["apps/app/**"],
 			"linter": {
 				"domains": {
@@ -67,6 +113,16 @@
 				"rules": {
 					"style": {
 						"useImportType": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["apps/api/src/**"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noConsole": "error"
 					}
 				}
 			}

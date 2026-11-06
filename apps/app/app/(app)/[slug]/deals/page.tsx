@@ -1,5 +1,3 @@
-import type { Metadata } from "next";
-import { Suspense } from "react";
 import {
 	PageShell,
 	PageShellActions,
@@ -9,7 +7,9 @@ import {
 	PageShellHeading,
 	PageShellLoading,
 	PageShellTitle,
-} from "@/components/page-shell";
+} from "@crm/ui/components/page-shell";
+import type { Metadata } from "next";
+import { Suspense } from "react";
 import { requireSession } from "@/lib/session";
 import { HydrateClient } from "@/lib/trpc/hydrate";
 import { getServerQueryClient, getServerTrpc } from "@/lib/trpc/server";
@@ -39,7 +39,7 @@ export default function DealsPage({
 			</PageShellHeader>
 
 			<PageShellContent className="min-h-0">
-				<Suspense fallback={<PageShellLoading />}>
+				<Suspense fallback={<PageShellLoading shape="table" />}>
 					<Deals searchParams={searchParams} />
 				</Suspense>
 			</PageShellContent>
@@ -50,19 +50,20 @@ export default function DealsPage({
 async function Deals({
 	searchParams,
 }: Pick<PageProps<"/[slug]/deals">, "searchParams">) {
-	await requireSession();
-
-	const values = await dealsSearchParams.load(searchParams);
+	const [, values] = await Promise.all([
+		requireSession(),
+		dealsSearchParams.load(searchParams),
+	]);
 
 	const trpc = getServerTrpc();
 	const queryClient = getServerQueryClient();
-	await queryClient.prefetchQuery(
-		trpc.deals.list.queryOptions(dealsSearchParams.toInput(values)),
-	);
-	void queryClient.prefetchQuery(trpc.users.list.queryOptions());
-	void queryClient.prefetchQuery(
-		trpc.companies.options.queryOptions({ q: "" }),
-	);
+	await Promise.all([
+		queryClient.prefetchQuery(
+			trpc.deals.list.queryOptions(dealsSearchParams.toInput(values)),
+		),
+		queryClient.prefetchQuery(trpc.users.list.queryOptions()),
+		queryClient.prefetchQuery(trpc.companies.options.queryOptions({ q: "" })),
+	]);
 
 	return (
 		<HydrateClient>

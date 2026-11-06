@@ -1,8 +1,6 @@
 "use client";
 
-import Email from "@carbon/icons-react/es/Email";
-import Partnership from "@carbon/icons-react/es/Partnership";
-import Star from "@carbon/icons-react/es/Star";
+import type { FieldValueJson } from "@crm/db/fields";
 import {
 	Accordion,
 	AccordionContent,
@@ -17,67 +15,75 @@ import {
 } from "@crm/ui/components/entity-logo";
 import { Icon } from "@crm/ui/components/icon";
 import { PersonAvatar } from "@crm/ui/components/person-avatar";
+import {
+	RecordEmpty,
+	RecordSection,
+	type RecordSheetTab,
+} from "@crm/ui/components/record-sheet";
 import { SimpleTable, SimpleTableRow } from "@crm/ui/components/simple-table";
 import { StatusIndicator } from "@crm/ui/components/status-indicator";
 import { TableCell } from "@crm/ui/components/table";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { HandshakeIcon, MailIcon, StarIcon } from "lucide-react";
 import { toast } from "sonner";
 import { AgentPanel } from "@/components/crm/agent-panel";
+import { InlineCompanyField } from "@/components/crm/company-picker";
 import { contactName } from "@/components/crm/contact-name";
 import { ContactEnrichmentAction } from "@/components/crm/enrichment-actions";
-import {
-	ENRICHMENT_POLL_MS,
-	EnrichmentIndicator,
-	isEnriching,
-} from "@/components/crm/enrichment-status";
-import {
-	FactSuggestion,
-	factsByField,
-	provenanceFor,
-} from "@/components/crm/facts";
+import { EnrichmentIndicator } from "@/components/crm/enrichment-status";
+import { FactProvenance, FactSuggestion } from "@/components/crm/facts";
+import { FieldsCog, RecordFields } from "@/components/crm/fields/record-fields";
 import {
 	InlineField,
 	InlineSelectField,
-	savingField,
+	savingValue,
 } from "@/components/crm/inline-field";
 import { OwnerCell } from "@/components/crm/owner-cell";
-import { ContactSocials, hasContactLinks } from "@/components/crm/social-links";
+import { ContactSocials } from "@/components/crm/social-links";
 import { DealStageMenu } from "@/components/crm/stage-change";
 import { Timeline } from "@/components/crm/timeline/timeline";
+import { WebsiteActivity } from "@/components/crm/website-activity";
 import {
-	DetailSheetBody,
 	DetailSheetEmpty,
+	DetailSheetLoaded,
 	DetailSheetProperties,
 	DetailSheetProperty,
 	DetailSheetProse,
 	DetailSheetSection,
-	DetailSheetStat,
-	DetailSheetStats,
-	type DetailSheetTab,
 } from "@/components/detail-sheet";
+import { LocalDateTime, LocalRelativeDate } from "@/components/local-date-time";
+import { factsByField } from "@/lib/contact-facts";
+import { ENRICHMENT_POLL_MS, isEnriching } from "@/lib/enrichment-status";
+import { savingField } from "@/lib/pending-field";
+import { hasContactLinks } from "@/lib/social-links";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
 import { RecordActions } from "./record-actions";
-import { DealAmount, MetaLine, RecordSheetFrame } from "./record-parts";
+import { DealAmount, RecordSheetFrame } from "./record-parts";
 import { useOpenRecord, useRecordSheetView } from "./record-stack";
 
 type Contact = RouterOutputs["contacts"]["byId"];
 
 const NONE = "none";
 
-const dateFormat = new Intl.DateTimeFormat(undefined, {
+const DATE_OPTIONS: Intl.DateTimeFormatOptions = {
 	month: "short",
 	day: "numeric",
 	year: "numeric",
-});
+};
 
 const DEAL_COLUMNS = [
-	{ header: "Deal", width: "w-[32%]", className: "pl-5" },
-	{ header: "Role", width: "w-[16%]" },
-	{ header: "Stage", width: "w-[22%]" },
-	{ header: "Amount", width: "w-[16%]", align: "right" as const },
-	{ header: "Owner", width: "w-[14%]" },
+	{ id: "deal", header: "Deal", width: "w-[32%]", className: "pl-0" },
+	{ id: "role", header: "Role", width: "w-[16%]" },
+	{ id: "stage", header: "Stage", width: "w-[22%]" },
+	{
+		id: "amount",
+		header: "Amount",
+		width: "w-[16%]",
+		align: "right" as const,
+	},
+	{ id: "owner", header: "Owner", width: "w-[14%]" },
 ];
 
 export function ContactSheet({ contactId }: { contactId: string }) {
@@ -106,154 +112,137 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 		}),
 	);
 
-	const tabs: DetailSheetTab[] = contact
-		? [
-				{
-					value: "overview",
-					label: "Overview",
-					content: <ContactOverview contact={contact} />,
-				},
-				{
-					value: "deals",
-					label: "Deals",
-					count: contact.deals.length,
-					content: <ContactDeals contact={contact} />,
-				},
-				{
-					value: "activity",
-					label: "Activity",
-					content: <Timeline anchor={{ contactId: contact.id }} />,
-				},
-				{
-					value: "agent",
-					label: "Agent",
-					content: <AgentPanel record={{ kind: "contact", id: contact.id }} />,
-					keepMounted: true,
-				},
-			]
-		: [];
+	const tabs: RecordSheetTab[] = [
+		{
+			value: "overview",
+			label: "Overview",
+			content: contact ? <ContactOverview contact={contact} /> : null,
+		},
+		{
+			value: "deals",
+			label: "Deals",
+			count: contact?.deals.length,
+			fills: true,
+			content: contact ? <ContactDeals contact={contact} /> : null,
+		},
+		{
+			value: "activity",
+			label: "Activity",
+			fills: true,
+			content: contact ? <Timeline anchor={{ contactId: contact.id }} /> : null,
+		},
+		{
+			value: "agent",
+			label: "Agent",
+			fills: true,
+			content: contact ? (
+				<AgentPanel record={{ kind: "contact", id: contact.id }} />
+			) : null,
+			keepMounted: true,
+		},
+	];
 
 	return (
-		<RecordSheetFrame
-			loading={query.isPending}
-			error={query.error?.message ?? null}
-			title={contact ? contactName(contact) : "Contact"}
-			description={
-				contact ? (
-					<MetaLine parts={[contact.title, contact.company?.name]} />
-				) : undefined
+		<DetailSheetLoaded
+			record={
+				contact
+					? {
+							kind: "contact",
+							id: contact.id,
+							label: contactName(contact),
+							detail: contact.company?.name ?? contact.email,
+							iconUrl: null,
+							iconDarkUrl: null,
+							iconTone: null,
+							imageUrl: contact.imageUrl,
+						}
+					: null
 			}
-			note={
-				contact ? (
-					<>
-						{contact.isPrimaryContact ? (
-							<StatusIndicator
-								tone="success"
-								label={`Primary contact at ${contact.company?.name ?? "this company"}`}
-							/>
-						) : null}
-						{contact.enrichmentStatus !== "COMPLETE" ? (
-							<EnrichmentIndicator
-								status={contact.enrichmentStatus}
-								queued={contact.queued}
-								title={contact.enrichmentError}
-							/>
-						) : null}
-					</>
-				) : null
-			}
-			media={
-				<PersonAvatar
-					src={contact?.imageUrl}
-					name={contact ? contactName(contact) : "?"}
-					email={contact?.email}
-					size="lg"
-				/>
-			}
-			actions={
-				contact ? (
-					<>
-						<ContactEnrichmentAction contactId={contact.id} />
-						{contact.email ? (
-							<Button asChild variant="outline" size="sm">
-								<a href={`mailto:${contact.email}`}>
-									<Icon icon={Email} data-icon="inline-start" />
-									<span className="hidden sm:inline">Email</span>
-								</a>
-							</Button>
-						) : null}
-						{contact.company && !contact.isPrimaryContact ? (
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={setPrimary.isPending}
-								onClick={() =>
-									setPrimary.mutate({
-										companyId: contact.company?.id ?? "",
-										contactId: contact.id,
-									})
-								}
-							>
-								<Icon icon={Star} data-icon="inline-start" />
-								<span className="hidden sm:inline">Make primary</span>
-							</Button>
-						) : null}
-						<RecordActions
-							record={{ kind: "contact", id: contact.id }}
+		>
+			<RecordSheetFrame
+				kind="contact"
+				loading={query.isPending}
+				error={query.error?.message ?? null}
+				title={contact ? contactName(contact) : "Contact"}
+				media={
+					contact ? (
+						<PersonAvatar
+							src={contact.imageUrl}
 							name={contactName(contact)}
-							consequence={`Their notes, agent conversations and everything the agent found go too; emails and meetings stay filed against the company.${contact.email ? ` The sync will not bring ${contact.email} back — only adding them yourself will.` : ""}`}
+							email={contact.email}
+							size="sm"
 						/>
-					</>
-				) : null
-			}
-			stats={
-				contact ? (
-					<DetailSheetStats>
-						<DetailSheetStat label="Company">
+					) : null
+				}
+				pills={
+					contact ? (
+						<>
+							{contact.title ? (
+								<span className="text-foreground">{contact.title}</span>
+							) : null}
 							{contact.company ? (
-								<CompanyStat company={contact.company} />
-							) : (
-								<EmptyCellValue />
-							)}
-						</DetailSheetStat>
-						<DetailSheetStat label="Email">
+								<CompanyLink company={contact.company} />
+							) : null}
+							{contact.isPrimaryContact ? (
+								<StatusIndicator tone="success" label="Primary contact" />
+							) : null}
+							{contact.enrichmentStatus !== "COMPLETE" ? (
+								<EnrichmentIndicator
+									status={contact.enrichmentStatus}
+									queued={contact.queued}
+									title={contact.enrichmentError}
+								/>
+							) : null}
+						</>
+					) : null
+				}
+				actions={
+					contact ? (
+						<>
+							<ContactEnrichmentAction contactId={contact.id} />
 							{contact.email ? (
-								<a
-									href={`mailto:${contact.email}`}
-									className="underline-offset-2 hover:underline"
+								<Button asChild variant="outline" size="sm">
+									<a href={`mailto:${contact.email}`}>
+										<Icon icon={MailIcon} data-icon="inline-start" />
+										<span className="hidden sm:inline">Email</span>
+									</a>
+								</Button>
+							) : null}
+							{contact.company && !contact.isPrimaryContact ? (
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={setPrimary.isPending}
+									onClick={() =>
+										setPrimary.mutate({
+											companyId: contact.company?.id ?? "",
+											contactId: contact.id,
+										})
+									}
 								>
-									{contact.email}
-								</a>
-							) : (
-								<EmptyCellValue />
-							)}
-						</DetailSheetStat>
-						<DetailSheetStat label="Phone">
-							{contact.phone ? (
-								<a
-									href={`tel:${contact.phone}`}
-									className="underline-offset-2 hover:underline"
-								>
-									{contact.phone}
-								</a>
-							) : (
-								<EmptyCellValue />
-							)}
-						</DetailSheetStat>
-						<DetailSheetStat label="Owner">
-							<OwnerCell owner={contact.owner} />
-						</DetailSheetStat>
-					</DetailSheetStats>
-				) : null
-			}
-			tabs={tabs}
-			tab={tab}
-			onTabChange={setTab}
-		/>
+									<Icon icon={StarIcon} data-icon="inline-start" />
+									<span className="hidden sm:inline">Make primary</span>
+								</Button>
+							) : null}
+							<RecordActions
+								record={{ kind: "contact", id: contact.id }}
+								name={contactName(contact)}
+								consequence={`Their notes, agent conversations and everything the agent found go too. Emails and meetings stay filed against the company.${contact.email ? ` The sync will not bring ${contact.email} back. Only adding them yourself will.` : ""}`}
+								archivedAt={contact.archivedAt}
+							/>
+						</>
+					) : null
+				}
+				rail={contact ? <ContactRail contact={contact} /> : null}
+				tabs={tabs}
+				tab={tab}
+				onTabChange={setTab}
+			/>
+		</DetailSheetLoaded>
 	);
 }
 
-function CompanyStat({
+function CompanyLink({
 	company,
 }: {
 	company: NonNullable<Contact["company"]>;
@@ -264,7 +253,7 @@ function CompanyStat({
 		<button
 			type="button"
 			onClick={() => openRecord({ kind: "company", id: company.id })}
-			className="flex min-w-0 items-center gap-2 underline-offset-2 hover:underline"
+			className="flex min-w-0 items-center gap-1.5 rounded-sm text-muted-foreground underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:shadow-focus"
 		>
 			<EntityLogo
 				src={company.iconUrl}
@@ -279,11 +268,39 @@ function CompanyStat({
 }
 
 function ContactOverview({ contact }: { contact: Contact }) {
+	const hasRelationship =
+		contact.relationship.emails > 0 ||
+		contact.relationship.meetings > 0 ||
+		contact.relationship.colleagues.length > 0;
+
+	return (
+		<>
+			{contact.brief ? (
+				<Background brief={contact.brief} />
+			) : hasRelationship ? null : (
+				<RecordSection label="Background">
+					<RecordEmpty>
+						Nothing is known about {contactName(contact)} yet. Research, emails
+						and meetings show here as they arrive.
+					</RecordEmpty>
+				</RecordSection>
+			)}
+
+			<WeKnowThem
+				relationship={contact.relationship}
+				contactName={contactName(contact)}
+			/>
+
+			<WebsiteActivity contactId={contact.id} />
+		</>
+	);
+}
+
+function ContactRail({ contact }: { contact: Contact }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 
 	const users = useQuery(trpc.users.list.queryOptions());
-	const companies = useQuery(trpc.companies.options.queryOptions({ q: "" }));
 
 	const { applied, proposed } = factsByField(contact.facts);
 
@@ -291,7 +308,7 @@ function ContactOverview({ contact }: { contact: Contact }) {
 		const fact = applied.get(field);
 		const suggestion = proposed.get(field);
 		return {
-			provenance: fact ? provenanceFor(fact) : undefined,
+			provenance: fact ? <FactProvenance fact={fact} /> : undefined,
 			suggestion: suggestion ? (
 				<FactSuggestion fact={suggestion} contactId={contact.id} />
 			) : undefined,
@@ -305,15 +322,20 @@ function ContactOverview({ contact }: { contact: Contact }) {
 		}),
 	);
 
+	const saveFields = (fields: Record<string, FieldValueJson>) =>
+		update.mutate({ id: contact.id, data: { fields } });
+
+	const isSavingField = savingValue(update);
+
 	const save = (data: Record<string, string | null>) =>
 		update.mutate({ id: contact.id, data });
 
 	const isSaving = savingField(update);
 
 	return (
-		<DetailSheetBody>
-			<DetailSheetSection title="Details">
-				<DetailSheetProperties>
+		<>
+			<DetailSheetSection title="Details" action={<FieldsCog kind="contact" />}>
+				<DetailSheetProperties columns={1}>
 					<InlineField
 						label="First name"
 						value={contact.firstName}
@@ -372,16 +394,11 @@ function ContactOverview({ contact }: { contact: Contact }) {
 						onSave={(githubUrl) => save({ githubUrl })}
 						{...agentProps("githubUrl")}
 					/>
-					<InlineSelectField
-						label="Company"
+					<InlineCompanyField
 						value={contact.company?.id ?? NONE}
-						options={[
-							{ value: NONE, label: "No company" },
-							...(companies.data ?? []).map((company) => ({
-								value: company.id,
-								label: company.name,
-							})),
-						]}
+						company={contact.company}
+						saving={isSaving("companyId")}
+						none={{ value: NONE, label: "No company" }}
 						onSave={(companyId) =>
 							save({ companyId: companyId === NONE ? null : companyId })
 						}
@@ -400,22 +417,20 @@ function ContactOverview({ contact }: { contact: Contact }) {
 							save({ ownerId: ownerId === NONE ? null : ownerId })
 						}
 					/>
+					<RecordFields
+						fields={contact.fields}
+						saving={isSavingField}
+						onSave={saveFields}
+					/>
 				</DetailSheetProperties>
 			</DetailSheetSection>
-
-			{contact.brief ? <Background brief={contact.brief} /> : null}
-
-			<WeKnowThem
-				relationship={contact.relationship}
-				contactName={contactName(contact)}
-			/>
 
 			{hasContactLinks(contact) ? (
 				<DetailSheetSection title="Links">
 					<ContactSocials contact={contact} />
 				</DetailSheetSection>
 			) : null}
-		</DetailSheetBody>
+		</>
 	);
 }
 
@@ -435,7 +450,7 @@ function Background({ brief }: { brief: NonNullable<Contact["brief"]> }) {
 		<DetailSheetSection
 			title="Background"
 			action={
-				<span className="text-muted-foreground text-xs">
+				<span className="flex items-baseline gap-x-3 text-13 text-muted-foreground">
 					{brief.sourceUrl ? (
 						<a
 							href={brief.sourceUrl}
@@ -446,8 +461,7 @@ function Background({ brief }: { brief: NonNullable<Contact["brief"]> }) {
 							Source
 						</a>
 					) : null}
-					{brief.sourceUrl ? " · " : null}
-					{dateFormat.format(new Date(brief.refreshedAt))}
+					<LocalDateTime date={brief.refreshedAt} options={DATE_OPTIONS} />
 				</span>
 			}
 		>
@@ -489,17 +503,6 @@ function PreviousRoles({ roles }: { roles: string[] }) {
 	);
 }
 
-const relativeFormat = new Intl.RelativeTimeFormat(undefined, {
-	numeric: "auto",
-});
-
-function daysAgo(iso: string): string {
-	const days = Math.round(
-		(Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24),
-	);
-	return relativeFormat.format(-days, "day");
-}
-
 function WeKnowThem({
 	relationship,
 	contactName: name,
@@ -520,12 +523,18 @@ function WeKnowThem({
 				{emails > 0 ? (
 					<DetailSheetProperty label="Emails">
 						<span className="tabular-nums">{emails}</span>
-						<span className="text-muted-foreground">
-							{" · "}
-							{lastReplyAt
-								? `last reply ${daysAgo(lastReplyAt)}`
-								: `${first} has never replied`}
-						</span>
+					</DetailSheetProperty>
+				) : null}
+
+				{emails > 0 ? (
+					<DetailSheetProperty label="Last reply">
+						{lastReplyAt ? (
+							<LocalRelativeDate date={lastReplyAt} />
+						) : (
+							<span className="text-muted-foreground">
+								{first} has never replied
+							</span>
+						)}
 					</DetailSheetProperty>
 				) : null}
 
@@ -537,10 +546,14 @@ function WeKnowThem({
 
 				{nextMeeting ? (
 					<DetailSheetProperty label="Next meeting" wide>
-						{nextMeeting.title ?? "Meeting"}
-						<span className="text-muted-foreground">
-							{" · "}
-							{dateFormat.format(new Date(nextMeeting.startsAt))}
+						<span className="flex min-w-0 flex-col">
+							<span>{nextMeeting.title ?? "Meeting"}</span>
+							<span className="text-muted-foreground">
+								<LocalDateTime
+									date={nextMeeting.startsAt}
+									options={DATE_OPTIONS}
+								/>
+							</span>
 						</span>
 					</DetailSheetProperty>
 				) : null}
@@ -568,7 +581,12 @@ function Colleagues({
 				<button
 					key={colleague.id}
 					type="button"
-					onClick={() => openRecord({ kind: "contact", id: colleague.id })}
+					onClick={() =>
+						openRecord(
+							{ kind: "contact", id: colleague.id },
+							colleagues.map((entry) => ({ kind: "contact", id: entry.id })),
+						)
+					}
 					className="min-w-0 truncate underline-offset-2 hover:underline"
 				>
 					{colleague.name}
@@ -587,7 +605,7 @@ function ContactDeals({ contact }: { contact: Contact }) {
 	if (contact.deals.length === 0) {
 		return (
 			<DetailSheetEmpty
-				icon={Partnership}
+				icon={HandshakeIcon}
 				title="Not on any deals"
 				description={`${contactName(contact)} is not attached to anything being sold yet. Deals are opened on the company, then people are added to them.`}
 			/>
@@ -600,9 +618,14 @@ function ContactDeals({ contact }: { contact: Contact }) {
 				<SimpleTableRow
 					key={deal.id}
 					clickable
-					onClick={() => openRecord({ kind: "deal", id: deal.id })}
+					onClick={() =>
+						openRecord(
+							{ kind: "deal", id: deal.id },
+							contact.deals.map((entry) => ({ kind: "deal", id: entry.id })),
+						)
+					}
 				>
-					<TableCell className="truncate py-2.5 pr-3 pl-5 font-medium">
+					<TableCell className="truncate py-2.5 pr-3 pl-0 font-medium">
 						{deal.name}
 					</TableCell>
 					<TableCell className="truncate px-3 py-2.5 text-muted-foreground">

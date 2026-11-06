@@ -1,25 +1,30 @@
 "use client";
 
-import Chat from "@carbon/icons-react/es/Chat";
-import Checkmark from "@carbon/icons-react/es/Checkmark";
-import Email from "@carbon/icons-react/es/Email";
-import Events from "@carbon/icons-react/es/Events";
-import Task from "@carbon/icons-react/es/Task";
-import Time from "@carbon/icons-react/es/Time";
 import { Button } from "@crm/ui/components/button";
-import type { CarbonIcon } from "@crm/ui/components/icon";
+import type { IconComponent } from "@crm/ui/components/icon";
+import { Skeleton } from "@crm/ui/components/skeleton";
 import { Spinner } from "@crm/ui/components/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@crm/ui/components/toggle-group";
+import { SKELETON, skeletonRows } from "@crm/ui/lib/skeleton-config";
 import { cn } from "@crm/ui/lib/utils";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import {
+	CalendarDaysIcon,
+	CheckIcon,
+	Clock3Icon,
+	MailIcon,
+	MessageSquareIcon,
+	SquareCheckIcon,
+} from "lucide-react";
 import { useQueryState } from "nuqs";
 import { DetailSheetEmpty, SECTION_TITLE } from "@/components/detail-sheet";
+import { SEARCH_PARAM } from "@/lib/search-param-keys";
 import { useTRPC } from "@/lib/trpc/client";
+import { useHydrated } from "@/lib/use-hydrated";
 import { ActivityComposer } from "./activity-composer";
 import { TimelineEntry, type TimelineEntryData } from "./timeline-entry";
 import {
 	historyFilter,
-	TIMELINE_PARAM,
 	TIMELINE_TABS,
 	type TimelineTab,
 	timelineTabParser,
@@ -30,19 +35,16 @@ export type TimelineAnchor =
 	| { contactId: string }
 	| { dealId: string };
 
-const TAB_LABELS: Record<TimelineTab, string> = {
+const TAB_LABELS = {
 	all: "All",
 	notes: "Notes",
 	email: "Email",
 	meetings: "Meetings",
 	upcoming: "Upcoming",
 	done: "Done",
-};
+} satisfies Record<TimelineTab, string>;
 
-const EMPTY_STATES: Record<
-	TimelineTab,
-	{ title: string; description: string }
-> = {
+const EMPTY_STATES = {
 	all: {
 		title: "Nothing has happened yet",
 		description:
@@ -51,7 +53,7 @@ const EMPTY_STATES: Record<
 	notes: {
 		title: "No notes",
 		description:
-			"Notes are what you write down for the next person to read — what they care about, who else is involved, what you promised.",
+			"Notes are what you write down for the next person to read: what they care about, who else is involved, what you promised.",
 	},
 	email: {
 		title: "No email",
@@ -72,56 +74,65 @@ const EMPTY_STATES: Record<
 		title: "Nothing finished yet",
 		description: "Tasks move here once you tick them off.",
 	},
-};
+} satisfies Record<TimelineTab, { title: string; description: string }>;
 
-const EMPTY_ICONS: Record<TimelineTab, CarbonIcon> = {
-	all: Time,
-	notes: Chat,
-	email: Email,
-	meetings: Events,
-	upcoming: Task,
-	done: Checkmark,
-};
+const EMPTY_ICONS = {
+	all: Clock3Icon,
+	notes: MessageSquareIcon,
+	email: MailIcon,
+	meetings: CalendarDaysIcon,
+	upcoming: SquareCheckIcon,
+	done: CheckIcon,
+} satisfies Record<TimelineTab, IconComponent>;
 
-const dayFormat = new Intl.DateTimeFormat(undefined, {
+const dayFormat = new Intl.DateTimeFormat("en-US", {
 	weekday: "short",
 	month: "short",
 	day: "numeric",
 	year: "numeric",
 });
 
-function dayLabel(at: Date): string {
-	const midnight = (date: Date) =>
-		new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+function dayLabel(day: string, local: boolean): string {
+	const now = new Date();
+	const today = dayKey(now.toISOString(), local);
+	const yesterdayDate = local
+		? new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+		: new Date(Date.now() - 86_400_000);
+	const yesterday = dayKey(yesterdayDate.toISOString(), local);
 
-	const days = Math.round(
-		(midnight(new Date()) - midnight(at)) / (1000 * 60 * 60 * 24),
-	);
-
-	if (days === 0) return "Today";
-	if (days === 1) return "Yesterday";
-	return dayFormat.format(at);
+	if (day === today) return "Today";
+	if (day === yesterday) return "Yesterday";
+	return dayFormat.format(new Date(`${day}T00:00:00`));
 }
 
-function byDay(entries: TimelineEntryData[]) {
+function byDay(entries: TimelineEntryData[], local: boolean) {
 	const groups = new Map<
 		string,
 		{ day: string; label: string; entries: TimelineEntryData[] }
 	>();
 
 	for (const entry of entries) {
-		const at = new Date(entry.occurredAt ?? entry.createdAt);
-		const day = at.toDateString();
+		const day = dayKey(entry.occurredAt ?? entry.createdAt, local);
 
 		const group = groups.get(day);
 		if (group) {
 			group.entries.push(entry);
 		} else {
-			groups.set(day, { day, label: dayLabel(at), entries: [entry] });
+			groups.set(day, { day, label: dayLabel(day, local), entries: [entry] });
 		}
 	}
 
 	return [...groups.values()];
+}
+
+function dayKey(value: string, local: boolean): string {
+	if (!local) return value.slice(0, 10);
+	const date = new Date(value);
+	return [
+		date.getFullYear(),
+		String(date.getMonth() + 1).padStart(2, "0"),
+		String(date.getDate()).padStart(2, "0"),
+	].join("-");
 }
 
 function TimelineDay({
@@ -149,8 +160,12 @@ function TimelineDay({
 
 export function Timeline({ anchor }: { anchor: TimelineAnchor }) {
 	const trpc = useTRPC();
+	const hydrated = useHydrated();
 
-	const [tab, setTab] = useQueryState(TIMELINE_PARAM, timelineTabParser);
+	const [tab, setTab] = useQueryState(
+		SEARCH_PARAM.record.timeline,
+		timelineTabParser,
+	);
 
 	const counts = useQuery(trpc.activities.timelineCounts.queryOptions(anchor));
 
@@ -175,7 +190,7 @@ export function Timeline({ anchor }: { anchor: TimelineAnchor }) {
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="flex shrink-0 flex-col gap-2 border-b px-5 py-3">
+			<div className="flex shrink-0 flex-col gap-2 border-b pb-3">
 				<ActivityComposer anchor={anchor} />
 
 				<ToggleGroup
@@ -201,9 +216,15 @@ export function Timeline({ anchor }: { anchor: TimelineAnchor }) {
 			</div>
 
 			{history.isPending ? (
-				<div className="flex min-h-0 flex-1 items-center justify-center">
-					<Spinner />
-				</div>
+				<ul aria-busy className="flex flex-col gap-3 pt-1">
+					{skeletonRows(SKELETON.rows.feed).map((row) => (
+						<li key={row} className="flex items-center gap-3">
+							<Skeleton className="size-6 shrink-0 rounded-full" />
+							<Skeleton className="h-4 flex-1" />
+							<Skeleton className="h-4 w-10" />
+						</li>
+					))}
+				</ul>
 			) : entries.length === 0 && pinnedEntries.length === 0 ? (
 				<DetailSheetEmpty
 					icon={EMPTY_ICONS[tab]}
@@ -211,7 +232,7 @@ export function Timeline({ anchor }: { anchor: TimelineAnchor }) {
 					description={EMPTY_STATES[tab].description}
 				/>
 			) : (
-				<div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-4">
+				<div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-4">
 					{pinnedEntries.length > 0 ? (
 						<TimelineDay
 							label="Outstanding"
@@ -220,7 +241,7 @@ export function Timeline({ anchor }: { anchor: TimelineAnchor }) {
 						/>
 					) : null}
 
-					{byDay(entries).map((group) => (
+					{byDay(entries, hydrated).map((group) => (
 						<TimelineDay
 							key={group.day}
 							label={group.label}

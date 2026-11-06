@@ -3,7 +3,7 @@ import { z } from "zod";
 import { setResearchKeyInput } from "../src/settings/settings.contracts";
 import { readableInputError } from "../src/trpc/error-formatter";
 
-const causeOf = (schema: z.ZodType, value: unknown) => {
+const causeOf = (schema: z.ZodType, value: z.core.util.JSONType) => {
 	const result = schema.safeParse(value);
 	if (result.success) throw new Error("expected the parse to fail");
 	return result.error;
@@ -14,7 +14,7 @@ describe("what a rejected form says", () => {
 		const cause = causeOf(setResearchKeyInput, { apiKey: "short" });
 
 		expect(readableInputError("ignored", cause)).toBe(
-			"That does not look like a Context API key — it is too short.",
+			"That does not look like a Context API key. It is too short.",
 		);
 	});
 

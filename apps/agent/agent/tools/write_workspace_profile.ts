@@ -6,7 +6,9 @@ import {
 } from "@crm/db/workspace";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { changeWrite } from "../lib/approval";
 import { currentFocus } from "../lib/focus";
+import { assertResearchPurpose } from "../lib/session-purpose";
 import { identity } from "../lib/workspace";
 
 const line = (what: string) =>
@@ -35,7 +37,9 @@ export default defineTool({
 		),
 		sourceUrl: z.string().optional(),
 	}),
-	async execute(input) {
+	approval: changeWrite(),
+	async execute(input, ctx) {
+		assertResearchPurpose(ctx);
 		const us = await identity();
 
 		if (!us?.website) {

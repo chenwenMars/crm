@@ -1,8 +1,5 @@
 "use client";
 
-import Add from "@carbon/icons-react/es/Add";
-import ChevronDown from "@carbon/icons-react/es/ChevronDown";
-import TrashCan from "@carbon/icons-react/es/TrashCan";
 import { Button } from "@crm/ui/components/button";
 import {
 	DropdownMenu,
@@ -13,18 +10,20 @@ import {
 } from "@crm/ui/components/dropdown-menu";
 import { Icon } from "@crm/ui/components/icon";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDownIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { LocalDateTime } from "@/components/local-date-time";
 import { useTRPC } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
 
 export type Conversation = RouterOutputs["conversations"]["list"][number];
 
-const dateFormat = new Intl.DateTimeFormat(undefined, {
+const DATE_OPTIONS: Intl.DateTimeFormatOptions = {
 	month: "short",
 	day: "numeric",
 	hour: "numeric",
 	minute: "2-digit",
-});
+};
 
 export function ConversationPicker({
 	conversations,
@@ -42,16 +41,16 @@ export function ConversationPicker({
 	const label = current?.title ?? "New conversation";
 
 	return (
-		<div className="flex items-center gap-2 border-b px-5 py-2">
+		<div className="flex min-w-0 items-center gap-2 border-b py-2">
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
 					<Button
 						variant="ghost"
-						size="sm"
-						className="min-w-0 flex-1 justify-start px-2 font-normal"
+						size="sm-flush"
+						className="min-w-0 flex-1 justify-start font-normal"
 					>
 						<span className="truncate">{label}</span>
-						<Icon icon={ChevronDown} data-icon="inline-end" />
+						<Icon icon={ChevronDownIcon} data-icon="inline-end" />
 					</Button>
 				</DropdownMenuTrigger>
 
@@ -68,7 +67,10 @@ export function ConversationPicker({
 									{conversation.title ?? "Untitled"}
 								</span>
 								<span className="shrink-0 text-muted-foreground text-xs">
-									{dateFormat.format(new Date(conversation.lastMessageAt))}
+									<LocalDateTime
+										date={conversation.lastMessageAt}
+										options={DATE_OPTIONS}
+									/>
 								</span>
 							</DropdownMenuItem>
 						))
@@ -76,7 +78,7 @@ export function ConversationPicker({
 
 					<DropdownMenuSeparator />
 					<DropdownMenuItem onSelect={onNew}>
-						<Icon icon={Add} data-icon="inline-start" />
+						<Icon icon={PlusIcon} data-icon="inline-start" />
 						New conversation
 					</DropdownMenuItem>
 				</DropdownMenuContent>
@@ -119,7 +121,7 @@ function Forget({
 			disabled={busy || remove.isPending}
 			onClick={() => remove.mutate({ id: conversation.id })}
 		>
-			<Icon icon={TrashCan} />
+			<Icon icon={Trash2Icon} />
 			<span className="sr-only">Delete this conversation</span>
 		</Button>
 	);

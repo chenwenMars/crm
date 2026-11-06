@@ -1,35 +1,64 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { DEFAULT_WORKSPACE_NAME, WORKSPACE_ID } from "@crm/auth/organization";
 import { db } from "@crm/db";
+import { workspaceSlug } from "@crm/db/workspace";
+import { z } from "zod";
+import {
+	builderConversationCreateInput,
+	conversationListInput,
+	conversationSaveInput,
+} from "../src/conversations/conversations.contracts";
 import { ConversationsService } from "../src/conversations/conversations.service";
+
+const record = z.record(z.string(), z.unknown()).catch({});
+
+const list = z.array(z.unknown()).catch([]);
+
+const text = z.string().nullable().catch(null);
 
 const suffix = process.env.TEST_RUN_ID ?? "conversations-spec";
 const email = `conversation.subject.${suffix}@example.test`;
 const userId = `user-${suffix}`;
-
-function memoryCache() {
-	const store = new Map<string, unknown>();
-	return {
-		store,
-		get: async <T>(key: string) => store.get(key) as T | undefined,
-		set: async (key: string, value: unknown) => {
-			store.set(key, value);
-		},
-		del: async (key: string) => {
-			store.delete(key);
-		},
-	};
-}
+const memberId = `conversation-member-${suffix}`;
 
 let contactId: string;
 let service: ConversationsService;
-let cache: ReturnType<typeof memoryCache>;
 
 beforeAll(async () => {
+	await db.agentEvent.deleteMany({
+		where: {
+			OR: [
+				{ sessionId: { startsWith: `builder-question-${suffix}` } },
+				{ sessionId: { startsWith: `ses_${suffix}` } },
+			],
+		},
+	});
+	await db.agentConversation.deleteMany({ where: { userId } });
+	await db.member.deleteMany({ where: { id: memberId } });
 	await db.user.deleteMany({ where: { id: userId } });
 	await db.contact.deleteMany({ where: { email } });
+	await db.organization.upsert({
+		where: { id: WORKSPACE_ID },
+		update: {},
+		create: {
+			id: WORKSPACE_ID,
+			name: DEFAULT_WORKSPACE_NAME,
+			slug: workspaceSlug(DEFAULT_WORKSPACE_NAME),
+			createdAt: new Date(),
+		},
+	});
 
 	await db.user.create({
 		data: { id: userId, name: "Test Rep", email: `${userId}@example.test` },
+	});
+	await db.member.create({
+		data: {
+			id: memberId,
+			organizationId: WORKSPACE_ID,
+			userId,
+			role: "member",
+			createdAt: new Date(),
+		},
 	});
 	const contact = await db.contact.create({
 		data: { firstName: "Conversation", lastName: "Subject", email },
@@ -37,15 +66,21 @@ beforeAll(async () => {
 	});
 	contactId = contact.id;
 
-	cache = memoryCache();
-	service = new ConversationsService(
-		db,
-		cache as unknown as ConstructorParameters<typeof ConversationsService>[1],
-	);
+	service = new ConversationsService(db);
 });
 
 afterAll(async () => {
+	await db.agentEvent.deleteMany({
+		where: {
+			OR: [
+				{ sessionId: { startsWith: `builder-question-${suffix}` } },
+				{ sessionId: { startsWith: `ses_${suffix}` } },
+			],
+		},
+	});
 	await db.contact.deleteMany({ where: { email } });
+	await db.agentConversation.deleteMany({ where: { userId } });
+	await db.member.deleteMany({ where: { id: memberId } });
 	await db.user.deleteMany({ where: { id: userId } });
 });
 
@@ -100,17 +135,15 @@ describe("ConversationsService", () => {
 		});
 	});
 
-	it("serves the list from cache, and drops it when something changes", async () => {
-		await service.list({ contactId }, userId);
-		expect(cache.store.size).toBe(1);
-
+	it("reflects newly saved conversations immediately", async () => {
+		const before = await service.list({ contactId }, userId);
 		await service.save(
 			{ contactId, sessionId: `ses_${suffix}_2`, messageCount: 1 },
 			userId,
 		);
-		expect(cache.store.size).toBe(0);
-
-		expect(await service.list({ contactId }, userId)).toHaveLength(2);
+		expect(await service.list({ contactId }, userId)).toHaveLength(
+			before.length + 1,
+		);
 	});
 
 	it("newest first, so reopening lands on the last thing you asked", async () => {
@@ -123,40 +156,966 @@ describe("ConversationsService", () => {
 	});
 
 	it("refuses a conversation that belongs to a record of neither kind", async () => {
-		expect(
+		await expect(
 			service.save({ sessionId: `ses_${suffix}_3` }, userId),
 		).rejects.toThrow();
 	});
 
+	it("requires exactly one CRM record in list and save inputs", () => {
+		expect(conversationListInput.safeParse({}).success).toBe(false);
+		expect(
+			conversationListInput.safeParse({ contactId, companyId: "company-1" })
+				.success,
+		).toBe(false);
+		expect(
+			conversationSaveInput.safeParse({
+				contactId,
+				dealId: "deal-1",
+				sessionId: "session-1",
+			}).success,
+		).toBe(false);
+	});
+
+	it("does not mutate a conversation owned by another rep", async () => {
+		const sessionId = `ses_${suffix}_ownership`;
+		await service.save(
+			{
+				contactId,
+				sessionId,
+				continuationToken: "owner-token",
+				streamIndex: 3,
+			},
+			userId,
+		);
+
+		let ownershipError: unknown;
+		try {
+			await service.save(
+				{
+					contactId,
+					sessionId,
+					continuationToken: "attacker-token",
+					streamIndex: 99,
+				},
+				"somebody-else",
+			);
+		} catch (error) {
+			ownershipError = error;
+		}
+		expect(ownershipError).toBeDefined();
+
+		expect(
+			await db.agentConversation.findUnique({
+				where: { sessionId },
+				select: { continuationToken: true, streamIndex: true },
+			}),
+		).toEqual({ continuationToken: "owner-token", streamIndex: 3 });
+	});
+
+	it("does not move an existing session to another CRM record", async () => {
+		const sessionId = `ses_${suffix}_record`;
+		await service.save({ contactId, sessionId }, userId);
+
+		let recordError: unknown;
+		try {
+			await service.save({ companyId: "another-record", sessionId }, userId);
+		} catch (error) {
+			recordError = error;
+		}
+		expect(recordError).toBeInstanceOf(Error);
+		expect((recordError as Error).message).toContain("cannot be moved");
+	});
+
+	it("deduplicates concurrent saves of the same record session", async () => {
+		const sessionId = `ses_${suffix}_concurrent`;
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				service.save({ contactId, sessionId, streamIndex: 7 }, userId),
+			),
+		);
+
+		expect(new Set(results.map((result) => result.id)).size).toBe(1);
+		expect(await db.agentConversation.count({ where: { sessionId } })).toBe(1);
+	});
+
+	it("does not treat a builder session as a record conversation", async () => {
+		const builder = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Summarize this customer",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const sessionId = `ses_${suffix}_builder`;
+		await db.agentConversation.update({
+			where: { id: builder.id },
+			data: { sessionId },
+		});
+
+		let saveError: unknown;
+		try {
+			await service.save({ contactId, sessionId }, userId);
+		} catch (error) {
+			saveError = error;
+		}
+		expect(saveError).toBeDefined();
+		expect(
+			await db.agentConversation.findUnique({
+				where: { id: builder.id },
+				select: { kind: true, contactId: true },
+			}),
+		).toEqual({ kind: "BUILDER", contactId: null });
+	});
+
+	it("returns the newest event window in chronological order", async () => {
+		const sessionId = `ses_${suffix}_events`;
+		const saved = await service.save({ contactId, sessionId }, userId);
+		const emittedAt = new Date("2026-08-05T12:00:00.000Z");
+		const eventTypes = [
+			"turn.started",
+			"turn.completed",
+			"step.started",
+			"step.completed",
+		];
+		await db.agentEvent.createMany({
+			data: eventTypes.map((type, position) => ({
+				id: `evt_${suffix}_window_${position}`,
+				sessionId,
+				contactId,
+				type,
+				data: {},
+				emittedAt: new Date(emittedAt.getTime() + position),
+			})),
+		});
+
+		expect(
+			(await service.events({ id: saved.id, limit: 2 }, userId)).map(
+				(event) => event.type,
+			),
+		).toEqual(["step.started", "step.completed"]);
+	});
+
+	it("returns builder events from descendant sessions", async () => {
+		const builder = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CREATE_AGENT",
+				message: "Build an agent that asks one question",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const rootSessionId = `builder-question-${suffix}-root`;
+		await db.agentConversation.update({
+			where: { id: builder.id },
+			data: { sessionId: rootSessionId },
+		});
+		const emittedAt = new Date("2026-08-05T13:00:00.000Z");
+		await db.agentEvent.createMany({
+			data: [
+				{
+					id: `evt_${suffix}_builder_root`,
+					sessionId: rootSessionId,
+					conversationId: builder.id,
+					type: "actions.requested",
+					data: {
+						actions: [
+							{
+								kind: "tool-call",
+								callId: "call-root",
+								toolName: "search_crm",
+								input: {},
+							},
+						],
+					},
+					emittedAt,
+				},
+				{
+					id: `evt_${suffix}_builder_child`,
+					sessionId: `builder-question-${suffix}-child`,
+					conversationId: builder.id,
+					type: "input.requested",
+					data: {
+						requests: [
+							{
+								requestId: "request-child",
+								kind: "question",
+								action: {
+									kind: "tool-call",
+									callId: "call-child",
+									toolName: "ask_user",
+									input: {},
+								},
+								prompt: "Choose one option.",
+							},
+						],
+					},
+					emittedAt: new Date(emittedAt.getTime() + 1),
+				},
+			],
+		});
+
+		expect(
+			(await service.events({ id: builder.id, limit: 10 }, userId)).map(
+				(event) => event.type,
+			),
+		).toEqual(["actions.requested", "input.requested"]);
+	});
+});
+
+describe("ConversationsService resume", () => {
+	it("returns the indexed root prefix for a builder reload", async () => {
+		const builder = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Keep this chat durable",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const sessionId = `builder-resume-${suffix}`;
+		await db.agentConversation.update({
+			where: { id: builder.id },
+			data: { sessionId, streamIndex: 2 },
+		});
+		await db.agentEvent.createMany({
+			data: [0, 1].map((streamIndex) => ({
+				id: `evt_${suffix}_resume_${streamIndex}`,
+				sessionId,
+				conversationId: builder.id,
+				streamIndex,
+				deliveryIds: [`delivery-${streamIndex}`],
+				type: "message.completed",
+				data: { message: `Message ${streamIndex}` },
+				emittedAt: new Date(1_786_000_000_000 + streamIndex),
+			})),
+		});
+
+		const reloaded = await service.builderById(builder.id, userId);
+
+		expect(reloaded.resume?.session).toEqual({ sessionId, streamIndex: 2 });
+		expect(reloaded.resume?.events.map((event) => event.meta.id)).toEqual([
+			`evt_${suffix}_resume_0`,
+			`evt_${suffix}_resume_1`,
+		]);
+	});
+});
+
+describe("ConversationsService continued", () => {
 	it("forgets a conversation and the events behind it", async () => {
-		const [conversation] = await service.list({ contactId }, userId);
-		if (!conversation) throw new Error("expected a conversation");
+		const sessionId = `ses_${suffix}_delete`;
+		const conversation = await service.save({ contactId, sessionId }, userId);
 
 		await db.agentEvent.create({
 			data: {
 				id: `evt_${suffix}`,
-				sessionId: conversation.sessionId,
+				sessionId,
 				contactId,
 				type: "turn.completed",
 				data: {},
 				emittedAt: new Date(),
 			},
 		});
+		await db.agentBuilderArtifact.create({
+			data: {
+				conversationId: conversation.id,
+				path: "agent/instructions.md",
+				language: "markdown",
+				content: "Temporary draft",
+				revision: 1,
+			},
+		});
 
 		await service.remove(conversation.id, userId);
 
-		expect(await service.list({ contactId }, userId)).toHaveLength(1);
+		expect(
+			await db.agentConversation.findUnique({ where: { id: conversation.id } }),
+		).toBeNull();
 		expect(
 			await db.agentEvent.count({
-				where: { sessionId: conversation.sessionId },
+				where: { sessionId },
+			}),
+		).toBe(0);
+		expect(
+			await db.agentBuilderArtifact.count({
+				where: { conversationId: conversation.id },
 			}),
 		).toBe(0);
 	});
 
 	it("will not let one rep delete another's conversation", async () => {
-		const [conversation] = await service.list({ contactId }, userId);
-		if (!conversation) throw new Error("expected a conversation");
+		const conversation = await service.save(
+			{ contactId, sessionId: `ses_${suffix}_protected` },
+			userId,
+		);
 
-		expect(service.remove(conversation.id, "somebody-else")).rejects.toThrow();
+		let removeError: unknown;
+		try {
+			await service.remove(conversation.id, "somebody-else");
+		} catch (error) {
+			removeError = error;
+		}
+		expect(removeError).toBeDefined();
+		expect(
+			await db.agentConversation.findUnique({ where: { id: conversation.id } }),
+		).not.toBeNull();
+	});
+
+	it("persists the command type that controls agent creation", async () => {
+		const chat = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Tell me about this customer",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const creation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CREATE_AGENT",
+				message: "/Create agent Flag stalled deals",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+
+		expect(
+			(await service.builderById(chat.id, userId)).submissions[0],
+		).toMatchObject({ commandType: "CHAT" });
+		expect(
+			(await service.builderById(creation.id, userId)).submissions[0],
+		).toMatchObject({ commandType: "CREATE_AGENT" });
+		expect((await service.builderById(chat.id, userId)).title).toBeNull();
+		expect((await service.builderById(creation.id, userId)).title).toBeNull();
+	});
+
+	it("persists attachment bytes once and returns lightweight transcript metadata", async () => {
+		const imageBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+		const textBytes = Buffer.from("account notes");
+		const input = {
+			clientRequestId: crypto.randomUUID(),
+			commandType: "CHAT" as const,
+			message: "Review these files",
+			resources: [],
+			attachments: [
+				{
+					name: "account.png",
+					type: "image/png",
+					size: imageBytes.byteLength,
+					contentBase64: imageBytes.toString("base64"),
+				},
+				{
+					name: "notes.txt",
+					type: "text/plain",
+					size: textBytes.byteLength,
+					contentBase64: textBytes.toString("base64"),
+				},
+			],
+		};
+		const conversation = await service.createBuilder(input, userId);
+		const detail = await service.builderById(conversation.id, userId);
+		const submission = detail.submissions.find(
+			(row) => row.clientRequestId === input.clientRequestId,
+		);
+		const message = record.parse(submission?.message);
+		const attachments = list
+			.parse(message.attachments)
+			.map((entry) => record.parse(entry));
+
+		expect(JSON.stringify(message)).not.toContain("contentBase64");
+		expect(attachments).toEqual([
+			expect.objectContaining({
+				name: "account.png",
+				type: "image/png",
+				size: imageBytes.byteLength,
+				previewUrl: expect.stringContaining("/api/conversations/attachments/"),
+			}),
+			expect.objectContaining({
+				name: "notes.txt",
+				type: "text/plain",
+				size: textBytes.byteLength,
+				previewUrl: null,
+			}),
+		]);
+		const imageId = text.parse(attachments[0]?.id);
+		if (imageId === null) throw new Error("Missing attachment id");
+		const image = await service.attachment(imageId, userId);
+		expect(Buffer.from(image.content)).toEqual(imageBytes);
+		expect(image).toMatchObject({
+			name: "account.png",
+			mediaType: "image/png",
+			previewable: true,
+		});
+	});
+
+	it("rejects attachment metadata that does not match its bytes", () => {
+		expect(
+			builderConversationCreateInput.safeParse({
+				clientRequestId: crypto.randomUUID(),
+				message: "Review this file",
+				attachments: [
+					{
+						name: "notes.txt",
+						type: "text/plain",
+						size: 99,
+						contentBase64: Buffer.from("notes").toString("base64"),
+					},
+				],
+			}).success,
+		).toBe(false);
+	});
+
+	it("reuses persisted attachment bytes when retrying a failed agent turn", async () => {
+		const bytes = Buffer.from("retry-safe attachment");
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Read this attachment",
+				resources: [],
+				attachments: [
+					{
+						name: "retry.txt",
+						type: "text/plain",
+						size: bytes.byteLength,
+						contentBase64: bytes.toString("base64"),
+					},
+				],
+			},
+			userId,
+		);
+		const original = await service.builderById(conversation.id, userId);
+		const originalMessage = record.parse(original.submissions[0]?.message);
+		const originalAttachment = record.parse(
+			list.parse(originalMessage.attachments)[0],
+		);
+
+		await service.submitBuilder(
+			{
+				id: conversation.id,
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Try reading it again",
+				resources: [],
+				attachments: [
+					{
+						id: String(originalAttachment.id),
+						name: String(originalAttachment.name),
+						type: String(originalAttachment.type),
+						size: Number(originalAttachment.size),
+						previewUrl: null,
+					},
+				],
+			},
+			userId,
+		);
+
+		const detail = await service.builderById(conversation.id, userId);
+		const retryMessage = record.parse(detail.submissions.at(-1)?.message);
+		const retryAttachment = record.parse(
+			list.parse(retryMessage.attachments)[0],
+		);
+		expect(retryAttachment.id).not.toBe(originalAttachment.id);
+		const stored = await service.attachment(String(retryAttachment.id), userId);
+		expect(Buffer.from(stored.content)).toEqual(bytes);
+	});
+
+	it("does not copy an attachment from another private conversation", async () => {
+		const bytes = Buffer.from("private attachment");
+		const source = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Private source",
+				resources: [],
+				attachments: [
+					{
+						name: "private.txt",
+						type: "text/plain",
+						size: bytes.byteLength,
+						contentBase64: bytes.toString("base64"),
+					},
+				],
+			},
+			userId,
+		);
+		const target = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Different private chat",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const sourceDetail = await service.builderById(source.id, userId);
+		const sourceMessage = record.parse(sourceDetail.submissions[0]?.message);
+		const attachment = record.parse(list.parse(sourceMessage.attachments)[0]);
+
+		let submitError: unknown;
+		try {
+			await service.submitBuilder(
+				{
+					id: target.id,
+					clientRequestId: crypto.randomUUID(),
+					commandType: "CHAT",
+					message: "Copy data across chats",
+					resources: [],
+					attachments: [
+						{
+							id: String(attachment.id),
+							name: String(attachment.name),
+							type: String(attachment.type),
+							size: Number(attachment.size),
+							previewUrl: null,
+						},
+					],
+				},
+				userId,
+			);
+		} catch (error) {
+			submitError = error;
+		}
+		expect(submitError).toBeInstanceOf(Error);
+		expect((submitError as Error).message).toContain("no longer available");
+	});
+
+	it("deduplicates concurrent builder creation retries", async () => {
+		const clientRequestId = crypto.randomUUID();
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				service.createBuilder(
+					{
+						clientRequestId,
+						commandType: "CHAT",
+						message: "Prepare a renewal brief",
+						resources: [],
+						attachments: [],
+					},
+					userId,
+				),
+			),
+		);
+
+		expect(new Set(results.map((result) => result.id)).size).toBe(1);
+		expect(
+			await db.agentConversationSubmission.count({
+				where: { clientRequestId },
+			}),
+		).toBe(1);
+	});
+
+	it("deduplicates concurrent builder message retries", async () => {
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Review the account history",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const clientRequestId = crypto.randomUUID();
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				service.submitBuilder(
+					{
+						id: conversation.id,
+						clientRequestId,
+						commandType: "CHAT",
+						message: "Summarize the open risks",
+						resources: [],
+						attachments: [],
+					},
+					userId,
+				),
+			),
+		);
+
+		expect(new Set(results.map((result) => result.id)).size).toBe(1);
+		expect(
+			await db.agentConversationSubmission.count({
+				where: { clientRequestId },
+			}),
+		).toBe(1);
+	});
+
+	it("queues a pending builder answer for the CRM-owned Eve channel", async () => {
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CREATE_AGENT",
+				message: "/Create agent Flag overdue invoices",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const sessionId = `builder-question-${suffix}-1`;
+		await db.agentConversation.update({
+			where: { id: conversation.id },
+			data: {
+				sessionId,
+				continuationToken: `crm:builder:${conversation.id}`,
+				pendingInputRequests: [
+					{
+						kind: "question",
+						requestId: "question-1",
+						prompt: "Where should this go?",
+						action: {
+							kind: "tool-call",
+							callId: "call-question-1",
+							toolName: "ask_question",
+							input: { prompt: "Where should this go?" },
+						},
+						display: "select",
+						options: [{ id: "crm-task", label: "Create a CRM task" }],
+					},
+				],
+			},
+		});
+
+		expect(
+			(await service.builderById(conversation.id, userId)).pendingQuestion,
+		).toMatchObject({
+			requestId: "question-1",
+			prompt: "Where should this go?",
+		});
+
+		const response = await service.answerBuilderQuestion(
+			{
+				id: conversation.id,
+				clientRequestId: crypto.randomUUID(),
+				requestId: "question-1",
+				optionId: "crm-task",
+			},
+			userId,
+		);
+		const submission = await db.agentConversationSubmission.findUnique({
+			where: { id: response.id },
+			select: {
+				commandType: true,
+				inputRequestId: true,
+				message: true,
+				status: true,
+			},
+		});
+
+		expect(submission).toMatchObject({
+			commandType: "CREATE_AGENT",
+			inputRequestId: "question-1",
+			status: "PENDING",
+			message: {
+				text: "Create a CRM task",
+				inputResponse: {
+					requestId: "question-1",
+					optionId: "crm-task",
+				},
+			},
+		});
+	});
+
+	it("persists permission modes and queues durable tool approvals", async () => {
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CHAT",
+				message: "Archive the unused field",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const sessionId = `builder-question-${suffix}-approval`;
+		await db.agentConversation.update({
+			where: { id: conversation.id },
+			data: {
+				sessionId,
+				continuationToken: `crm:builder:${conversation.id}`,
+				pendingInputRequests: [
+					{
+						kind: "tool-approval",
+						requestId: "approval-1",
+						prompt: "Archive the Renewal date field?",
+						action: {
+							kind: "tool-call",
+							callId: "call-approval-1",
+							toolName: "archive_field",
+							input: { fieldId: "field-1" },
+						},
+						options: [
+							{ id: "approve", label: "Approve", style: "primary" },
+							{ id: "cancel", label: "Decline", style: "danger" },
+						],
+					},
+				],
+			},
+		});
+
+		expect(
+			(await service.builderById(conversation.id, userId)).permissionMode,
+		).toBe("manual");
+		await service.setBuilderPermissionMode(
+			{ id: conversation.id, permissionMode: "auto" },
+			userId,
+		);
+		const detail = await service.builderById(conversation.id, userId);
+		expect(detail.permissionMode).toBe("auto");
+		expect(detail.pendingApproval).toMatchObject({
+			requestId: "approval-1",
+			action: { toolName: "archive_field" },
+		});
+
+		const response = await service.answerBuilderApproval(
+			{
+				id: conversation.id,
+				clientRequestId: crypto.randomUUID(),
+				requestId: "approval-1",
+				decision: "approve",
+			},
+			userId,
+		);
+		const submission = await db.agentConversationSubmission.findUnique({
+			where: { id: response.id },
+			select: {
+				commandType: true,
+				inputRequestId: true,
+				message: true,
+				status: true,
+			},
+		});
+
+		expect(submission).toMatchObject({
+			commandType: "CHAT",
+			inputRequestId: "approval-1",
+			status: "PENDING",
+			message: {
+				text: "Approved",
+				inputResponse: {
+					requestId: "approval-1",
+					optionId: "approve",
+				},
+			},
+		});
+	});
+
+	it("keeps every pending request and presents them by explicit priority", async () => {
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CREATE_AGENT",
+				message: "/Create agent Review new deals",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		await db.agentConversation.update({
+			where: { id: conversation.id },
+			data: {
+				sessionId: `builder-input-priority-${suffix}`,
+				continuationToken: `crm:builder:${conversation.id}`,
+				pendingInputRequests: [
+					{
+						kind: "question",
+						requestId: "question-after-gates",
+						prompt: "Which stage?",
+						action: {
+							kind: "tool-call",
+							callId: "call-question-after-gates",
+							toolName: "ask_question",
+							input: { prompt: "Which stage?" },
+						},
+						display: "text",
+					},
+					{
+						kind: "tool-approval",
+						requestId: "approval-after-limit",
+						prompt: "Save the draft?",
+						action: {
+							kind: "tool-call",
+							callId: "call-approval-after-limit",
+							toolName: "save_agent_draft",
+							input: { name: "Deal review" },
+						},
+						options: [
+							{ id: "approve", label: "Approve" },
+							{ id: "cancel", label: "Decline" },
+						],
+					},
+					{
+						kind: "session-limit",
+						requestId: "limit-before-approval",
+						prompt: "Continue this builder session?",
+						action: {
+							kind: "tool-call",
+							callId: "call-limit-before-approval",
+							toolName: "session_limit_continuation",
+							input: { kind: "output", limit: 40_000 },
+						},
+						options: [
+							{ id: "continue", label: "Continue" },
+							{ id: "stop", label: "Stop" },
+						],
+					},
+				],
+			},
+		});
+
+		const first = await service.builderById(conversation.id, userId);
+		expect(first.pendingSessionLimit?.requestId).toBe("limit-before-approval");
+		expect(first.pendingApproval).toBeNull();
+		expect(first.pendingQuestion).toBeNull();
+
+		await service.answerBuilderSessionLimit(
+			{
+				id: conversation.id,
+				clientRequestId: crypto.randomUUID(),
+				requestId: "limit-before-approval",
+				decision: "continue",
+			},
+			userId,
+		);
+		const second = await service.builderById(conversation.id, userId);
+		expect(second.pendingSessionLimit).toBeNull();
+		expect(second.pendingApproval?.requestId).toBe("approval-after-limit");
+
+		await service.answerBuilderApproval(
+			{
+				id: conversation.id,
+				clientRequestId: crypto.randomUUID(),
+				requestId: "approval-after-limit",
+				decision: "approve",
+			},
+			userId,
+		);
+		const third = await service.builderById(conversation.id, userId);
+		expect(third.pendingApproval).toBeNull();
+		expect(third.pendingQuestion?.requestId).toBe("question-after-gates");
+	});
+
+	it("rejects an answer when the conversation has no durable question", async () => {
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CREATE_AGENT",
+				message: "/Create agent Notify the team",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		await db.agentConversation.update({
+			where: { id: conversation.id },
+			data: {
+				sessionId: `builder-question-${suffix}-recovery`,
+				continuationToken: `builder:${conversation.id}`,
+			},
+		});
+
+		let error: Error | null = null;
+		try {
+			await service.answerBuilderQuestion(
+				{
+					id: conversation.id,
+					clientRequestId: crypto.randomUUID(),
+					requestId: "question-only-in-eve",
+					optionId: "continue-building",
+				},
+				userId,
+			);
+		} catch (caught) {
+			error = caught as Error;
+		}
+		expect(error?.message).toBe(
+			"The agent is no longer waiting for that answer.",
+		);
+	});
+
+	it("accepts only one concurrent answer to a follow-up request", async () => {
+		const conversation = await service.createBuilder(
+			{
+				clientRequestId: crypto.randomUUID(),
+				commandType: "CREATE_AGENT",
+				message: "/Create agent Prepare meeting briefs",
+				resources: [],
+				attachments: [],
+			},
+			userId,
+		);
+		const sessionId = `builder-question-${suffix}-2`;
+		await db.agentConversation.update({
+			where: { id: conversation.id },
+			data: {
+				sessionId,
+				continuationToken: `crm:builder:${conversation.id}`,
+				pendingInputRequests: [
+					{
+						kind: "question",
+						requestId: "question-concurrent",
+						prompt: "Which output?",
+						action: {
+							kind: "tool-call",
+							callId: "call-question-concurrent",
+							toolName: "ask_question",
+							input: { prompt: "Which output?" },
+						},
+						display: "select",
+						options: [
+							{ id: "note", label: "Create a note" },
+							{ id: "task", label: "Create a task" },
+						],
+					},
+				],
+			},
+		});
+
+		const results = await Promise.allSettled([
+			service.answerBuilderQuestion(
+				{
+					id: conversation.id,
+					clientRequestId: crypto.randomUUID(),
+					requestId: "question-concurrent",
+					optionId: "note",
+				},
+				userId,
+			),
+			service.answerBuilderQuestion(
+				{
+					id: conversation.id,
+					clientRequestId: crypto.randomUUID(),
+					requestId: "question-concurrent",
+					optionId: "task",
+				},
+				userId,
+			),
+		]);
+
+		expect(
+			results.filter((result) => result.status === "fulfilled"),
+		).toHaveLength(1);
+		expect(
+			results.filter((result) => result.status === "rejected"),
+		).toHaveLength(1);
+		expect(
+			await db.agentConversationSubmission.count({
+				where: {
+					conversationId: conversation.id,
+					inputRequestId: "question-concurrent",
+				},
+			}),
+		).toBe(1);
 	});
 });

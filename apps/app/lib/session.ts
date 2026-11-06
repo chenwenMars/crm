@@ -1,4 +1,5 @@
-import { auth, needsGoogleGrant, type Session } from "@crm/auth";
+import { auth, type Session } from "@crm/auth/auth";
+import { needsMailboxGrant } from "@crm/auth/scopes";
 import { db } from "@crm/db";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -26,10 +27,10 @@ export const signInAccounts = cache(async (userId: string) =>
 	}),
 );
 
-export async function requireGoogleAccess(): Promise<Session> {
+export async function requireMailboxAccess(): Promise<Session> {
 	const session = await requireSession();
 
-	if (needsGoogleGrant(await signInAccounts(session.user.id))) {
+	if (needsMailboxGrant(await signInAccounts(session.user.id))) {
 		redirect("/grant-access");
 	}
 

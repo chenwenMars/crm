@@ -1,5 +1,3 @@
-import type { CarbonIcon } from "@crm/ui/components/icon";
-
 export type AgentRecordKind = "contact" | "company" | "deal";
 
 export type AgentRecord = { kind: AgentRecordKind; id: string };
@@ -13,13 +11,23 @@ type RecordCopy = {
 	suggestions: string[];
 };
 
-const COPY: Record<AgentRecordKind, RecordCopy> = {
+type RecordCopyByKind = Record<AgentRecordKind, RecordCopy>;
+
+export type AgentRecordHeader = Record<string, string>;
+
+export type AgentRecordFilter = {
+	contactId?: string;
+	companyId?: string;
+	dealId?: string;
+};
+
+const COPY: RecordCopyByKind = {
 	contact: {
 		header: "x-crm-contact",
 		field: "contactId",
 		title: "Ask about this person",
 		blurb:
-			"Every step is shown as it happens — including the leads it throws away.",
+			"Every step is shown as it happens, including the leads it throws away.",
 		placeholder: "Are they still there?",
 		suggestions: [
 			"Who is this person?",
@@ -59,16 +67,10 @@ export function recordCopy(kind: AgentRecordKind): RecordCopy {
 	return COPY[kind];
 }
 
-export function recordHeader(record: AgentRecord): Record<string, string> {
+export function recordHeader(record: AgentRecord): AgentRecordHeader {
 	return { [COPY[record.kind].header]: record.id };
 }
 
-export function recordFilter(record: AgentRecord): {
-	contactId?: string;
-	companyId?: string;
-	dealId?: string;
-} {
+export function recordFilter(record: AgentRecord): AgentRecordFilter {
 	return { [COPY[record.kind].field]: record.id };
 }
-
-export type { CarbonIcon };

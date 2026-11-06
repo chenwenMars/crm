@@ -3,17 +3,29 @@ import { cva, type VariantProps } from "class-variance-authority";
 import type * as React from "react";
 
 const textareaVariants = cva(
-	"flex field-sizing-content w-full rounded-md border border-input bg-background px-2.5 py-2 text-xs transition-colors outline-none placeholder:text-muted-foreground hover:border-ring/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:opacity-60 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/25 md:text-xs dark:bg-muted dark:shadow-[inset_0_1px_1px_rgb(0_0_0/0.30)] dark:disabled:bg-muted",
+	"flex field-sizing-content w-full rounded-md border border-border bg-transparent px-2.5 py-2 text-base transition-[color,background-color,border-color,box-shadow] outline-none placeholder:text-muted-foreground supports-[field-sizing:content]:resize-none hover:border-input focus-visible:shadow-focus disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground aria-invalid:border-destructive aria-invalid:ring-4 aria-invalid:ring-destructive/15 md:text-sm",
 	{
 		variants: {
-			size: { default: "min-h-16", sm: "min-h-8" },
+			variant: {
+				default: "",
+				flush:
+					"-mx-1 w-[calc(100%+--spacing(2))] px-1 [--focus-outline-offset:-2px] focus-visible:border-ring focus-visible:shadow-[inset_0_0_0_1px_var(--ring)]",
+				composer:
+					"resize-none rounded-none border-transparent bg-transparent px-1 py-0 text-base leading-6 shadow-none ring-0 hover:border-transparent focus-visible:border-transparent focus-visible:shadow-none focus-visible:ring-0 disabled:bg-transparent sm:text-15",
+			},
+			size: {
+				default: "min-h-24",
+				sm: "min-h-8",
+				composer: "max-h-40 min-h-6",
+			},
 		},
-		defaultVariants: { size: "default" },
+		defaultVariants: { variant: "default", size: "default" },
 	},
 );
 
 function Textarea({
 	className,
+	variant,
 	size,
 	...props
 }: Omit<React.ComponentProps<"textarea">, "size"> &
@@ -21,7 +33,7 @@ function Textarea({
 	return (
 		<textarea
 			data-slot="textarea"
-			className={cn(textareaVariants({ size }), className)}
+			className={cn(textareaVariants({ variant, size }), className)}
 			{...props}
 		/>
 	);

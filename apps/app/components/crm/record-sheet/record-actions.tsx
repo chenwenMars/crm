@@ -1,7 +1,5 @@
 "use client";
 
-import OverflowMenuVertical from "@carbon/icons-react/es/OverflowMenuVertical";
-import TrashCan from "@carbon/icons-react/es/TrashCan";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -21,6 +19,12 @@ import {
 } from "@crm/ui/components/dropdown-menu";
 import { Icon } from "@crm/ui/components/icon";
 import { useMutation } from "@tanstack/react-query";
+import {
+	ArchiveIcon,
+	EllipsisVerticalIcon,
+	Trash2Icon,
+	Undo2Icon,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useCrmCache } from "@/lib/trpc/cache";
@@ -31,21 +35,65 @@ import {
 	useRecordStack,
 } from "./record-stack";
 
-const NOUN: Record<RecordKind, string> = {
+const NOUN = {
 	company: "company",
 	contact: "contact",
 	deal: "deal",
-};
+} satisfies Record<RecordKind, string>;
 
-function useDeleteRecord(record: RecordRef) {
+const RECORD_PROCEDURES = {
+	company: "companies",
+	contact: "contacts",
+	deal: "deals",
+} satisfies Record<RecordKind, "companies" | "contacts" | "deals">;
+
+function useArchiveRecord(record: RecordRef) {
+	const trpc = useTRPC();
+	const cache = useCrmCache();
+
+	const handlers = {
+		onSuccess: (archived: { name: string }) => {
+			toast.success(
+				`${archived.name || `The ${NOUN[record.kind]}`} was archived.`,
+			);
+			void cache[record.kind](record.id);
+		},
+		onError: (error: { message: string }) => toast.error(error.message),
+	};
+
+	return useMutation(
+		trpc[RECORD_PROCEDURES[record.kind]].archive.mutationOptions(handlers),
+	);
+}
+
+function useRestoreRecord(record: RecordRef) {
+	const trpc = useTRPC();
+	const cache = useCrmCache();
+
+	const handlers = {
+		onSuccess: (restored: { name: string }) => {
+			toast.success(
+				`${restored.name || `The ${NOUN[record.kind]}`} was restored.`,
+			);
+			void cache[record.kind](record.id);
+		},
+		onError: (error: { message: string }) => toast.error(error.message),
+	};
+
+	return useMutation(
+		trpc[RECORD_PROCEDURES[record.kind]].restore.mutationOptions(handlers),
+	);
+}
+
+function usePurgeRecord(record: RecordRef) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 	const { close } = useRecordStack();
 
 	const handlers = {
-		onSuccess: (deleted: { name: string }) => {
+		onSuccess: (purged: { name: string }) => {
 			toast.success(
-				`${deleted.name || `The ${NOUN[record.kind]}`} was deleted.`,
+				`${purged.name || `The ${NOUN[record.kind]}`} was deleted forever.`,
 			);
 			void cache.removed(record);
 			close();
@@ -53,52 +101,70 @@ function useDeleteRecord(record: RecordRef) {
 		onError: (error: { message: string }) => toast.error(error.message),
 	};
 
-	const options =
-		record.kind === "contact"
-			? trpc.contacts.delete.mutationOptions(handlers)
-			: record.kind === "company"
-				? trpc.companies.delete.mutationOptions(handlers)
-				: trpc.deals.delete.mutationOptions(handlers);
-
-	return useMutation(options);
+	return useMutation(
+		trpc[RECORD_PROCEDURES[record.kind]].purge.mutationOptions(handlers),
+	);
 }
 
 export function RecordActions({
 	record,
 	name,
 	consequence,
+	archivedAt,
 }: {
 	record: RecordRef;
 	name: string;
 	consequence: string;
+	archivedAt: string | null;
 }) {
 	const [confirming, setConfirming] = useState(false);
-	const remove = useDeleteRecord(record);
+	const archive = useArchiveRecord(record);
+	const restore = useRestoreRecord(record);
+	const purge = usePurgeRecord(record);
+
+	const pending = archive.isPending || restore.isPending || purge.isPending;
 
 	return (
 		<>
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild>
-					<Button variant="ghost" size="icon-sm" disabled={remove.isPending}>
-						<Icon icon={OverflowMenuVertical} />
+					<Button variant="ghost" size="icon-sm" disabled={pending}>
+						<Icon icon={EllipsisVerticalIcon} />
 						<span className="sr-only">More actions</span>
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end" className="min-w-44">
-					<DropdownMenuItem
-						variant="destructive"
-						onSelect={() => setConfirming(true)}
-					>
-						<Icon icon={TrashCan} />
-						Delete {NOUN[record.kind]}
-					</DropdownMenuItem>
+					{archivedAt ? (
+						<>
+							<DropdownMenuItem
+								onSelect={() => restore.mutate({ id: record.id })}
+							>
+								<Icon icon={Undo2Icon} />
+								Restore {NOUN[record.kind]}
+							</DropdownMenuItem>
+							<DropdownMenuItem
+								variant="destructive"
+								onSelect={() => setConfirming(true)}
+							>
+								<Icon icon={Trash2Icon} />
+								Delete {NOUN[record.kind]} forever
+							</DropdownMenuItem>
+						</>
+					) : (
+						<DropdownMenuItem
+							onSelect={() => archive.mutate({ id: record.id })}
+						>
+							<Icon icon={ArchiveIcon} />
+							Archive {NOUN[record.kind]}
+						</DropdownMenuItem>
+					)}
 				</DropdownMenuContent>
 			</DropdownMenu>
 
 			<AlertDialog open={confirming} onOpenChange={setConfirming}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete {name}?</AlertDialogTitle>
+						<AlertDialogTitle>Delete {name} forever?</AlertDialogTitle>
 						<AlertDialogDescription>{consequence}</AlertDialogDescription>
 					</AlertDialogHeader>
 
@@ -106,9 +172,9 @@ export function RecordActions({
 						<AlertDialogCancel>Cancel</AlertDialogCancel>
 						<AlertDialogAction
 							variant="destructive"
-							onClick={() => remove.mutate({ id: record.id })}
+							onClick={() => purge.mutate({ id: record.id })}
 						>
-							Delete
+							Delete forever
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

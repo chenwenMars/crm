@@ -1,4 +1,3 @@
-import { Skeleton } from "@crm/ui/components/skeleton";
 import { cn } from "@crm/ui/lib/utils";
 import type * as React from "react";
 
@@ -10,19 +9,29 @@ function StatGroup({
 	return (
 		<div
 			data-slot="stat-group"
-			className={cn("@container/stats overflow-hidden border", className)}
+			className={cn(
+				"@container/stats overflow-hidden rounded-md bg-card text-card-foreground shadow-border",
+				className,
+			)}
 			{...props}
 		>
-			<div
-				className={cn(
-					"grid grid-cols-2 @2xl/stats:grid-cols-4",
-					"[&:nth-child(2n)]:border-l [&:nth-child(n+3)]:border-t",
-					"@2xl/stats:[&>*]:border-t-0 @2xl/stats:[&>*]:border-l @2xl/stats:[&>*:first-child]:border-l-0",
-				)}
-			>
+			<div className="grid grid-cols-1 divide-y @xl/stats:grid-cols-2 @xl/stats:divide-y-0 @xl/stats:[&>*:nth-child(even)]:border-l @xl/stats:[&>*:nth-child(n+3)]:border-t @4xl/stats:grid-cols-4 @4xl/stats:[&>*:nth-child(n+3)]:border-t-0 @4xl/stats:[&>*:not(:first-child)]:border-l">
 				{children}
 			</div>
 		</div>
+	);
+}
+
+function DashboardPanel({ className, ...props }: React.ComponentProps<"div">) {
+	return (
+		<div
+			data-slot="dashboard-panel"
+			className={cn(
+				"flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md bg-card text-card-foreground text-sm shadow-border",
+				className,
+			)}
+			{...props}
+		/>
 	);
 }
 
@@ -87,7 +96,10 @@ function ChartCard({
 	return (
 		<div
 			data-slot="chart-card"
-			className={cn("flex flex-col border", className)}
+			className={cn(
+				"flex flex-col overflow-hidden rounded-md bg-card text-card-foreground shadow-border",
+				className,
+			)}
 			{...props}
 		>
 			{title || description || action ? (
@@ -128,7 +140,10 @@ function KpiCard({
 	return (
 		<div
 			data-slot="kpi-card"
-			className={cn("flex flex-col gap-4 border p-5 md:p-6", className)}
+			className={cn(
+				"flex flex-col gap-4 rounded-md bg-card p-5 text-card-foreground shadow-border md:p-6",
+				className,
+			)}
 			{...props}
 		>
 			<h3 className="truncate font-medium text-muted-foreground text-sm">
@@ -176,48 +191,12 @@ function DashboardSection({
 	);
 }
 
-function DashboardSkeleton({
-	stats = 4,
-	className,
-}: {
-	stats?: number;
-	className?: string;
-}) {
-	return (
-		<div
-			data-slot="dashboard-skeleton"
-			className={cn("flex flex-col gap-6", className)}
-			aria-hidden
-		>
-			<StatGroup>
-				{Array.from({ length: stats }).map((_, i) => (
-					<div key={i} className="flex flex-col gap-3 p-4 md:p-6">
-						<Skeleton className="h-4 w-24" />
-						<Skeleton className="h-8 w-16" />
-						<Skeleton className="h-3 w-28" />
-					</div>
-				))}
-			</StatGroup>
-			<DashboardRow>
-				<div className="flex flex-col gap-4 border p-5 md:p-6">
-					<Skeleton className="h-4 w-40" />
-					<Skeleton className="h-[200px] w-full" />
-				</div>
-				<div className="flex flex-col items-center gap-4 border p-5 md:p-6">
-					<Skeleton className="h-4 w-32 self-start" />
-					<Skeleton className="size-[200px] rounded-full" />
-				</div>
-			</DashboardRow>
-		</div>
-	);
-}
-
 export {
 	ChartCard,
 	DashboardGrid,
+	DashboardPanel,
 	DashboardRow,
 	DashboardSection,
-	DashboardSkeleton,
 	KpiCard,
 	StatGroup,
 };

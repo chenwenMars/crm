@@ -1,4 +1,3 @@
-
 datasource db {
   provider = "postgresql"
 }
@@ -10,6 +9,7 @@ generator client {
   moduleFormat           = "esm"
   generatedFileExtension = "ts"
   importFileExtension    = ""
+  previewFeatures        = ["partialIndexes"]
 }
 
 model User {
@@ -30,14 +30,84 @@ model User {
   mailboxSyncs   MailboxSync[]
   factDecisions  ContactFact[]       @relation("FactDecider")
   conversations  AgentConversation[] @relation("ConversationOwner")
+  fieldValues    FieldValue[]        @relation("FieldValueUser")
+  savedViews     SavedView[]         @relation("SavedViewOwner")
+
+  createdAgentDefinitions AgentDefinition[]             @relation("AgentDefinitionCreator")
+  createdAgentVersions    AgentVersion[]                @relation("AgentVersionCreator")
+  createdAgentTriggers    AgentTrigger[]                @relation("AgentTriggerCreator")
+  initiatedAgentRuns      AgentRun[]                    @relation("AgentRunInitiator")
+  agentAuditEvents        AgentAuditEvent[]             @relation("AgentAuditActor")
+  conversationShares      AgentConversationShare[]      @relation("ConversationShareCreator")
+  conversationSubmissions AgentConversationSubmission[] @relation("ConversationSubmissionAuthor")
+  conversationFeedback    AgentConversationFeedback[]   @relation("ConversationFeedbackAuthor")
+  slackMemberMatch        SlackMemberMatch?
+  connectedMcpConnections McpConnection[]               @relation("McpConnectionUser")
+  mcpOauthStates          McpOauthState[]               @relation("McpOauthStateUser")
 
   members     Member[]
   invitations Invitation[]
 
   ssoproviders SsoProvider[]
 
+  apiKeys Apikey[]
+
   @@unique([email])
   @@map("user")
+}
+
+model SlackMemberMatch {
+  id          String   @id @default(cuid())
+  crmUserId   String   @unique
+  crmUser     User     @relation(fields: [crmUserId], references: [id], onDelete: Cascade)
+  slackUserId String?
+  slackHandle String?
+  slackEmail  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([slackUserId])
+  @@map("slackMemberMatch")
+}
+
+model SlackChannel {
+  id                String    @id
+  name              String
+  memberCount       Int?
+  available         Boolean   @default(true)
+  isPrivate         Boolean   @default(false)
+  isMember          Boolean   @default(false)
+  inviteRequestedAt DateTime?
+  classifiedAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([available, name])
+  @@index([updatedAt])
+  @@map("slackChannel")
+}
+
+model SlackInstallation {
+  installerId String   @id
+  teamId      String
+  teamName    String?
+  userToken   String?
+  userScopes  String
+  createdAt   DateTime @default(now())
+
+  @@map("slackInstallation")
+}
+
+model SlackWorkspaceGrant {
+  id         String   @id @default(cuid())
+  teamId     String   @unique
+  teamName   String?
+  userToken  String
+  userScopes String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("slackWorkspaceGrant")
 }
 
 model Session {
@@ -76,6 +146,126 @@ model Account {
 
   @@index([userId])
   @@map("account")
+}
+
+enum McpConnectionStatus {
+  CONNECTING
+  CONNECTED
+  ERROR
+  DISCONNECTED
+}
+
+enum McpAccessMode {
+  READ_ONLY
+  READ_WRITE
+}
+
+enum McpToolReviewState {
+  PENDING
+  REVIEWED
+  CHANGED
+  REMOVED
+}
+
+model McpConnection {
+  id String @id @default(cuid())
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  platformSlug  String
+  status        McpConnectionStatus @default(CONNECTING)
+  accessMode    McpAccessMode
+  grantedScopes String[]
+
+  encryptedAccessToken  String?
+  encryptedRefreshToken String?
+  tokenExpiresAt        DateTime?
+
+  registrationId String
+  registration   McpClientRegistration @relation(fields: [registrationId], references: [id], onDelete: Restrict)
+
+  connectedById String
+  connectedBy   User   @relation("McpConnectionUser", fields: [connectedById], references: [id], onDelete: Restrict)
+
+  connectedAt          DateTime?
+  lastSuccessfulCallAt DateTime?
+  lastErrorCode        String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  toolSnapshots McpToolSnapshot[]
+
+  @@unique([organizationId, platformSlug])
+  @@index([status, updatedAt])
+  @@map("mcpConnection")
+}
+
+model McpClientRegistration {
+  id String @id @default(cuid())
+
+  platformSlug                     String
+  metadataFingerprint              String
+  issuer                           String
+  clientId                         String
+  encryptedClientSecret            String?
+  encryptedRegistrationAccessToken String?
+  clientIdIssuedAt                 DateTime?
+  clientSecretExpiresAt            DateTime?
+  createdAt                        DateTime  @default(now())
+  updatedAt                        DateTime  @updatedAt
+
+  connections McpConnection[]
+  oauthStates McpOauthState[]
+
+  @@unique([platformSlug, metadataFingerprint])
+  @@index([clientSecretExpiresAt])
+  @@map("mcpClientRegistration")
+}
+
+model McpToolSnapshot {
+  id String @id @default(cuid())
+
+  connectionId String
+  connection   McpConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  inputSchema Json
+  annotations Json?
+  fingerprint String
+  callKind    String
+  reviewState McpToolReviewState @default(PENDING)
+  lastSeenAt  DateTime           @default(now())
+  createdAt   DateTime           @default(now())
+
+  @@unique([connectionId, name, fingerprint])
+  @@index([connectionId, name, lastSeenAt])
+  @@index([reviewState, lastSeenAt])
+  @@map("mcpToolSnapshot")
+}
+
+model McpOauthState {
+  id String @id @default(cuid())
+
+  stateHash      String       @unique
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation("McpOauthStateUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  platformSlug          String
+  accessMode            McpAccessMode
+  returnPath            String
+  encryptedCodeVerifier String
+  registrationId        String
+  registration          McpClientRegistration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+  expiresAt             DateTime
+  consumedAt            DateTime?
+  createdAt             DateTime              @default(now())
+
+  @@index([expiresAt, consumedAt])
+  @@map("mcpOauthState")
 }
 
 model Verification {
@@ -133,12 +323,92 @@ enum RecordSource {
   IMPORT
   EMAIL
   CALENDAR
+  TRACKING
+}
+
+enum AgentConversationKind {
+  RECORD
+  BUILDER
+}
+
+enum AgentDefinitionStatus {
+  DRAFT
+  DEPLOYING
+  LIVE
+  PAUSED
+  ARCHIVED
+  DELETED
+}
+
+enum AgentVersionStatus {
+  DRAFT
+  VALIDATING
+  READY
+  DEPLOYED
+  REJECTED
+}
+
+enum AgentBuilderArtifactStatus {
+  WRITING
+  READY
+}
+
+enum AgentTriggerType {
+  MANUAL
+  SCHEDULE
+  EVENT
+  WEBHOOK
+}
+
+enum AgentRunStatus {
+  QUEUED
+  RUNNING
+  WAITING_FOR_APPROVAL
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum AgentActionStatus {
+  PLANNED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum AgentConversationShareScope {
+  WORKSPACE_LINK
+}
+
+enum AgentConversationSubmissionStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  FAILED
+  CANCELLED
+}
+
+enum AgentConversationCommandType {
+  CHAT
+  CREATE_AGENT
+}
+
+enum AgentConversationPermissionMode {
+  MANUAL
+  AUTO
+  BYPASS
+}
+
+enum AgentResponseRating {
+  UP
+  DOWN
 }
 
 model Company {
   id          String  @id @default(cuid())
   name        String
-  domain      String? @unique
+  domain      String?
   website     String?
   description String?
 
@@ -177,6 +447,7 @@ model Company {
   source RecordSource @default(MANUAL)
 
   lastActivityAt DateTime?
+  archivedAt     DateTime?
 
   contacts       Contact[]           @relation("CompanyContacts")
   conversations  AgentConversation[]
@@ -184,12 +455,15 @@ model Company {
   activities     Activity[]
   emailThreads   EmailThread[]
   calendarEvents CalendarEvent[]
+  fieldValues    FieldValue[]
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
+  @@unique([domain], map: "company_domain_active_key", where: { archivedAt: null })
   @@index([ownerId])
   @@index([name])
   @@index([lastActivityAt])
+  @@index([archivedAt])
   @@map("company")
 }
 
@@ -207,9 +481,11 @@ model Contact {
   id          String  @id @default(cuid())
   firstName   String
   lastName    String?
-  email       String? @unique
+  email       String?
   phone       String?
   title       String?
+  seniority   String?
+  function    String?
   linkedinUrl String?
   twitterUrl  String?
   githubUrl   String?
@@ -234,18 +510,24 @@ model Contact {
   source RecordSource @default(MANUAL)
 
   lastActivityAt DateTime?
+  archivedAt     DateTime?
 
   deals           DealContact[]
   activities      Activity[]
   emailThreads    EmailThread[]
   calendarEvents  CalendarEvent[]
   eventAttendance CalendarAttendee[]
+  fieldValues     FieldValue[]
+  visitors        TrackedVisitor[]   @relation("VisitorContact")
+  submissions     FormSubmission[]   @relation("SubmissionContact")
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
+  @@unique([email], map: "contact_email_active_key", where: { archivedAt: null })
   @@index([companyId])
   @@index([ownerId])
   @@index([lastActivityAt])
+  @@index([archivedAt])
   @@map("contact")
 }
 
@@ -313,9 +595,11 @@ model AgentTask {
   id        String  @id @default(cuid())
   contactId String?
   companyId String?
+  dealId    String?
 
-  kind   String
-  reason String
+  kind    String
+  reason  String
+  payload Json?
 
   priority Int @default(0)
   budget   Int @default(4)
@@ -329,29 +613,42 @@ model AgentTask {
   finishedAt DateTime?
   outcome    String?
 
+  subject String?
+
   createdAt DateTime @default(now())
 
   @@index([dueAt, leasedUntil])
   @@index([contactId])
+  @@index([dealId])
+  @@index([kind, subject], where: { finishedAt: null })
   @@map("agentTask")
 }
 
 model AgentEvent {
-  id        String  @id
-  sessionId String
-  contactId String?
-  type      String
-  data      Json
+  id             String             @id
+  sessionId      String
+  streamIndex    Int?
+  deliveryIds    String[]           @default([])
+  contactId      String?
+  conversationId String?
+  conversation   AgentConversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  type           String
+  data           Json
+  encryptedData  String?
 
   emittedAt DateTime
 
   @@index([sessionId, emittedAt])
+  @@unique([sessionId, streamIndex])
   @@index([contactId, emittedAt])
+  @@index([conversationId, emittedAt])
   @@map("agentEvent")
 }
 
 model AgentConversation {
   id String @id @default(cuid())
+
+  kind AgentConversationKind @default(RECORD)
 
   contactId String?
   contact   Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
@@ -363,26 +660,398 @@ model AgentConversation {
   userId String
   user   User   @relation("ConversationOwner", fields: [userId], references: [id], onDelete: Cascade)
 
-  sessionId         String  @unique
-  continuationToken String?
-  streamIndex       Int     @default(0)
+  agentId String?
+  agent   AgentDefinition? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  sessionId           String? @unique
+  continuationToken   String?
+  streamIndex         Int     @default(0)
+  pendingInputRequests Json?
+
+  permissionMode AgentConversationPermissionMode @default(MANUAL)
 
   title        String?
   messageCount Int     @default(0)
 
-  createdAt     DateTime @default(now())
-  lastMessageAt DateTime @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lastMessageAt   DateTime  @default(now())
+  lastAssistantAt DateTime?
+  lastReadAt      DateTime?
+
+  shares           AgentConversationShare[]
+  submissions      AgentConversationSubmission[]
+  feedback         AgentConversationFeedback[]
+  events           AgentEvent[]
+  createdVersions  AgentVersion[]                @relation("AgentVersionSourceConversation")
+  builderArtifacts AgentBuilderArtifact[]
 
   @@index([contactId, lastMessageAt])
   @@index([companyId, lastMessageAt])
   @@index([dealId, lastMessageAt])
+  @@index([userId, kind, lastMessageAt])
+  @@index([agentId, lastMessageAt])
   @@map("agentConversation")
+}
+
+model AgentConversationFeedback {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation("ConversationFeedbackAuthor", fields: [userId], references: [id], onDelete: Cascade)
+
+  messageId String
+  rating    AgentResponseRating
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([conversationId, userId, messageId])
+  @@index([conversationId, createdAt])
+  @@map("agentConversationFeedback")
+}
+
+model AgentConversationShare {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("ConversationShareCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  scope     AgentConversationShareScope @default(WORKSPACE_LINK)
+  tokenHash String                      @unique
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+  revokedAt DateTime?
+
+  @@unique([conversationId], map: "agentConversationShare_one_active_per_conversation", where: { revokedAt: null })
+  @@index([conversationId, revokedAt])
+  @@map("agentConversationShare")
+}
+
+model AgentConversationSubmission {
+  id String @id @default(cuid())
+
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  submittedById String
+  submittedBy   User   @relation("ConversationSubmissionAuthor", fields: [submittedById], references: [id], onDelete: Restrict)
+
+  clientRequestId String                            @unique
+  inputRequestId  String?
+  commandType     AgentConversationCommandType      @default(CHAT)
+  message         Json
+  status          AgentConversationSubmissionStatus @default(PENDING)
+  attemptCount    Int                               @default(0)
+
+  errorCode    String?
+  errorMessage String?
+
+  createdAt  DateTime  @default(now())
+  sentAt     DateTime?
+  acceptedAt DateTime?
+
+  attachments AgentConversationAttachment[]
+
+  @@unique([conversationId, inputRequestId])
+  @@index([conversationId, createdAt])
+  @@index([status, createdAt])
+  @@map("agentConversationSubmission")
+}
+
+model AgentConversationAttachment {
+  id String @id @default(cuid())
+
+  submissionId String
+  submission   AgentConversationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  name      String
+  mediaType String
+  size      Int
+  content   Bytes
+  position  Int
+
+  createdAt DateTime @default(now())
+
+  @@index([submissionId, position])
+  @@map("agentConversationAttachment")
+}
+
+model AgentDefinition {
+  id String @id @default(cuid())
+
+  name        String
+  description String?
+  status      AgentDefinitionStatus @default(DRAFT)
+
+  createdById String
+  createdBy   User   @relation("AgentDefinitionCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  currentVersionId String?       @unique
+  currentVersion   AgentVersion? @relation("CurrentAgentVersion", fields: [currentVersionId, id], references: [id, agentId], onDelete: Restrict)
+
+  versions      AgentVersion[]      @relation("AgentVersions")
+  triggers      AgentTrigger[]
+  runs          AgentRun[]
+  actions       AgentAction[]
+  auditEvents   AgentAuditEvent[]
+  conversations AgentConversation[]
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+  deletedAt  DateTime?
+
+  @@unique([currentVersionId, id])
+  @@index([status, updatedAt])
+  @@index([createdById, createdAt])
+  @@map("agentDefinition")
+}
+
+model AgentVersion {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   AgentDefinition @relation("AgentVersions", fields: [agentId], references: [id], onDelete: Restrict)
+
+  number Int
+  status AgentVersionStatus @default(DRAFT)
+
+  instructions             String
+  manifest                 Json
+  modelId                  String
+  modelContextWindowTokens Int    @default(1000000)
+  sandboxPolicy            Json
+  validation               Json?
+
+  sourceConversationId String?
+  sourceConversation   AgentConversation? @relation("AgentVersionSourceConversation", fields: [sourceConversationId], references: [id], onDelete: SetNull)
+
+  createdById String
+  createdBy   User   @relation("AgentVersionCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  deploymentId String?
+  approvedAt   DateTime?
+  deployedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  currentFor       AgentDefinition?       @relation("CurrentAgentVersion")
+  triggers         AgentTrigger[]
+  runs             AgentRun[]
+  auditEvents      AgentAuditEvent[]
+  builderArtifacts AgentBuilderArtifact[]
+
+  @@unique([agentId, number])
+  @@unique([id, agentId])
+  @@index([agentId, createdAt])
+  @@index([status, createdAt])
+  @@map("agentVersion")
+}
+
+model AgentBuilderArtifact {
+  id String @id @default(cuid())
+
+  conversationId String?
+  conversation   AgentConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  versionId String?
+  version   AgentVersion? @relation(fields: [versionId], references: [id], onDelete: SetNull)
+
+  path            String
+  language        String
+  content         String
+  previousContent String?
+  revision        Int
+  status          AgentBuilderArtifactStatus @default(WRITING)
+  createdAt       DateTime                   @default(now())
+
+  @@unique([conversationId, path, revision], map: "agentBuilderArtifact_conversation_path_revision_key", where: { conversationId: { not: null } })
+  @@unique([versionId, path, revision], map: "agentBuilderArtifact_version_path_revision_key", where: { versionId: { not: null } })
+  @@index([conversationId, createdAt])
+  @@index([versionId, path])
+  @@map("agentBuilderArtifact")
+}
+
+model AgentTrigger {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   AgentDefinition @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  versionId String
+  version   AgentVersion @relation(fields: [versionId, agentId], references: [id, agentId], onDelete: Restrict)
+
+  type   AgentTriggerType
+  name   String
+  config Json
+
+  createdById String
+  createdBy   User   @relation("AgentTriggerCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  enabled   Boolean   @default(false)
+  nextRunAt DateTime?
+  lastRunAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  runs AgentRun[]
+
+  @@unique([id, agentId])
+  @@index([agentId, enabled])
+  @@index([enabled, nextRunAt])
+  @@index([versionId])
+  @@map("agentTrigger")
+}
+
+model AgentRun {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   AgentDefinition @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  versionId String
+  version   AgentVersion @relation(fields: [versionId, agentId], references: [id, agentId], onDelete: Restrict)
+
+  triggerId String?
+  trigger   AgentTrigger? @relation(fields: [triggerId, agentId], references: [id, agentId], onDelete: Restrict)
+
+  initiatedById String?
+  initiatedBy   User?   @relation("AgentRunInitiator", fields: [initiatedById], references: [id], onDelete: SetNull)
+
+  triggerType    AgentTriggerType
+  status         AgentRunStatus   @default(QUEUED)
+  principalId    String?
+  sessionId      String?          @unique
+  idempotencyKey String           @unique
+  correlationId  String           @unique
+
+  input   Json?
+  result  Json?
+  summary String?
+
+  modelId      String?
+  inputTokens  Int?
+  outputTokens Int?
+  costUsd      Decimal? @db.Decimal(12, 6)
+
+  errorCode    String?
+  errorMessage String?
+
+  nextEventSequence Int @default(0)
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  cancelRequestedAt DateTime?
+  cancelDeliveredAt DateTime?
+
+  events  AgentRunEvent[]
+  actions AgentAction[]
+
+  @@unique([id, agentId])
+  @@index([agentId, createdAt])
+  @@index([versionId, createdAt])
+  @@index([status, createdAt])
+  @@index([triggerId, createdAt])
+  @@map("agentRun")
+}
+
+model AgentRunEvent {
+  id String @id @default(cuid())
+
+  runId String
+  run   AgentRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  sequence  Int
+  type      String
+  data      Json
+  emittedAt DateTime @default(now())
+
+  @@unique([runId, sequence])
+  @@index([runId, emittedAt])
+  @@map("agentRunEvent")
+}
+
+model AgentAction {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   AgentDefinition @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  runId String
+  run   AgentRun @relation(fields: [runId, agentId], references: [id, agentId], onDelete: Restrict)
+
+  type        String
+  provider    String
+  targetType  String?
+  targetId    String?
+  targetLabel String?
+  summary     String
+  metadata    Json?
+
+  status         AgentActionStatus @default(PLANNED)
+  idempotencyKey String            @unique
+  requestHash    String?
+  externalId     String?
+  attemptCount   Int               @default(0)
+
+  errorCode    String?
+  errorMessage String?
+
+  plannedAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([agentId, plannedAt])
+  @@index([runId, plannedAt])
+  @@index([provider, externalId])
+  @@index([status, plannedAt])
+  @@map("agentAction")
+}
+
+model AgentAuditEvent {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   AgentDefinition @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  versionId String?
+  version   AgentVersion? @relation(fields: [versionId, agentId], references: [id, agentId], onDelete: Restrict)
+
+  actorUserId String?
+  actorUser   User?   @relation("AgentAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  type      String
+  actorType String
+  actorId   String?
+  summary   String
+  before    Json?
+  after     Json?
+  requestId String?
+  emittedAt DateTime @default(now())
+
+  @@unique([agentId, type, requestId])
+  @@index([agentId, emittedAt])
+  @@index([versionId, emittedAt])
+  @@index([actorUserId, emittedAt])
+  @@index([type, emittedAt])
+  @@map("agentAuditEvent")
 }
 
 model Deal {
   id            String              @id @default(cuid())
   conversations AgentConversation[]
   name          String
+  description   String?
   companyId     String
   company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ownerId       String
@@ -396,19 +1065,50 @@ model Deal {
   closedAt          DateTime?
   closedReason      String?
 
-  lastActivityAt DateTime?
+  baseAmount   Decimal?  @db.Decimal(24, 4)
+  baseCurrency String?
+  fxRate       Decimal?  @db.Decimal(20, 10)
+  fxRateAt     DateTime?
 
-  contacts   DealContact[]
-  activities Activity[]
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
+  lastActivityAt DateTime?
+  archivedAt     DateTime?
+
+  contacts    DealContact[]
+  activities  Activity[]
+  fieldValues FieldValue[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   @@index([companyId])
   @@index([ownerId])
   @@index([stage])
   @@index([expectedCloseDate])
   @@index([lastActivityAt])
+  @@index([baseAmount])
+  @@index([currency])
+  @@index([archivedAt])
   @@map("deal")
+}
+
+enum RateSource {
+  FETCHED
+  MANUAL
+}
+
+model ExchangeRate {
+  id            String     @id @default(cuid())
+  baseCurrency  String
+  quoteCurrency String
+  rate          Decimal    @db.Decimal(20, 10)
+  asOf          DateTime
+  source        RateSource
+  provider      String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([baseCurrency, quoteCurrency, source])
+  @@index([baseCurrency, quoteCurrency])
+  @@map("exchangeRate")
 }
 
 model DealContact {
@@ -421,6 +1121,123 @@ model DealContact {
   @@id([dealId, contactId])
   @@index([contactId])
   @@map("dealContact")
+}
+
+enum FieldEntity {
+  COMPANY
+  CONTACT
+  DEAL
+}
+
+enum FieldType {
+  TEXT
+  LONG_TEXT
+  NUMBER
+  DATE
+  CHECKBOX
+  SELECT
+  URL
+  EMAIL
+  PHONE
+  USER
+}
+
+model FieldDefinition {
+  id     String      @id @default(cuid())
+  entity FieldEntity
+  key    String
+  label  String
+  type   FieldType
+
+  agentFilled Boolean @default(true)
+  agentBrief  String?
+
+  required     Boolean @default(false)
+  showOnSheet  Boolean @default(true)
+  showOnTable  Boolean @default(false)
+  showOnFilter Boolean @default(false)
+  position     Int
+
+  archivedAt DateTime?
+
+  options FieldOption[]
+  values  FieldValue[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([entity, key])
+  @@index([entity, position])
+  @@map("fieldDefinition")
+}
+
+model FieldOption {
+  id       String          @id @default(cuid())
+  fieldId  String
+  field    FieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  label    String
+  position Int
+
+  archivedAt DateTime?
+  values     FieldValue[]
+
+  @@index([fieldId, position])
+  @@map("fieldOption")
+}
+
+model FieldValue {
+  id      String          @id @default(cuid())
+  fieldId String
+  field   FieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  dealId    String?
+  deal      Deal?    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  text     String?
+  number   Decimal?     @db.Decimal(24, 4)
+  date     DateTime?
+  bool     Boolean?
+  optionId String?
+  option   FieldOption? @relation(fields: [optionId], references: [id], onDelete: SetNull)
+  userId   String?
+  user     User?        @relation("FieldValueUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([fieldId, companyId])
+  @@unique([fieldId, contactId])
+  @@unique([fieldId, dealId])
+  @@index([fieldId, text])
+  @@index([fieldId, number])
+  @@index([fieldId, date])
+  @@index([companyId])
+  @@index([contactId])
+  @@index([dealId])
+  @@index([optionId])
+  @@index([userId])
+  @@map("fieldValue")
+}
+
+model SavedView {
+  id      String      @id @default(cuid())
+  entity  FieldEntity
+  name    String
+  shared  Boolean     @default(false)
+  filters Json
+
+  ownerId String
+  owner   User   @relation("SavedViewOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([entity, ownerId, name])
+  @@index([entity, shared])
+  @@map("savedView")
 }
 
 model Activity {
@@ -523,9 +1340,11 @@ model EmailMessage {
   threadId String
   thread   EmailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
-  rfcMessageId   String  @unique
-  syncedByUserId String?
-  gmailMessageId String?
+  rfcMessageId     String  @unique
+  syncedByUserId   String?
+  gmailMessageId   String?
+  outlookMessageId String?
+  outlookWebLink   String?
 
   direction  EmailDirection
   fromEmail  String
@@ -620,21 +1439,189 @@ model AppSetting {
 
   contextDevApiKey String?
 
+  reportingCurrency String?
+
+  ratesRefreshedAt DateTime?
+
+  archiveRetentionDays Int @default(180)
+
+  trackingSiteId           String? @unique
+  trackingCrossDomain      Boolean @default(true)
+  trackingLimitToDomains   Boolean @default(true)
+  trackingCookieSubdomains Boolean @default(false)
+  trackingSecureCookies    Boolean @default(true)
+  trackingHonourDnt        Boolean @default(true)
+  trackingCookieDays       Int     @default(395)
+  trackingConfigHash       String?
+  trackingPaused           Boolean @default(false)
+
   updatedAt DateTime @updatedAt
 
   @@map("appSetting")
 }
 
+enum DomainScope {
+  SITE_AND_SUBDOMAINS
+  EXACT_HOST
+}
+
+model TrackedDomain {
+  id    String      @id @default(cuid())
+  host  String      @unique
+  scope DomainScope @default(EXACT_HOST)
+
+  pageViews  Int       @default(0)
+  lastSeenAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@map("trackedDomain")
+}
+
+model TrackedVisitor {
+  id String @id
+
+  contactId String?
+  contact   Contact? @relation("VisitorContact", fields: [contactId], references: [id], onDelete: SetNull)
+
+  firstSource   String?
+  firstMedium   String?
+  firstCampaign String?
+  firstTerm     String?
+  firstContent  String?
+  firstReferrer String?
+  firstLanding  String?
+  firstTouchAt  DateTime?
+
+  lastSource   String?
+  lastMedium   String?
+  lastCampaign String?
+  lastTerm     String?
+  lastContent  String?
+  lastReferrer String?
+  lastLanding  String?
+  lastTouchAt  DateTime?
+
+  firstSeen DateTime @default(now())
+  lastSeen  DateTime @updatedAt
+
+  @@index([contactId])
+  @@index([firstSource])
+  @@map("trackedVisitor")
+}
+
+model TrackedEvent {
+  id String @id @default(cuid())
+
+  visitorId String
+  type      String
+  host      String
+  path      String
+  referrer  String?
+  label     String?
+
+  source   String?
+  medium   String?
+  campaign String?
+
+  occurredAt DateTime
+
+  @@index([visitorId, occurredAt])
+  @@index([occurredAt])
+  @@index([host, occurredAt])
+  @@index([source, occurredAt])
+  @@map("trackedEvent")
+}
+
+model TrackingCounter {
+  key       String   @id
+  value     Int      @default(0)
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("trackingCounter")
+}
+
+model TrackedPageDaily {
+  day      DateTime
+  host     String
+  path     String
+  views    Int      @default(0)
+  visitors Int      @default(0)
+
+  @@id([day, host, path])
+  @@index([host, day])
+  @@map("trackedPageDaily")
+}
+
+model FormSubmission {
+  id String @id @default(cuid())
+
+  visitorId String?
+  contactId String?
+  contact   Contact? @relation("SubmissionContact", fields: [contactId], references: [id], onDelete: SetNull)
+
+  host  String
+  path  String
+  email String?
+
+  fields Json
+
+  firstTouch Json?
+  lastTouch  Json?
+
+  dedupeKey  String    @unique
+  filedAt    DateTime?
+  skipReason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([contactId])
+  @@index([createdAt])
+  @@map("formSubmission")
+}
+
+model Install {
+  id String @id
+
+  uuid    String @unique
+  version String
+
+  lastRollupAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("install")
+}
+
+model TelemetryMilestone {
+  step      String   @id
+  reachedAt DateTime @default(now())
+
+  @@map("telemetryMilestone")
+}
+
+model TelemetryCounter {
+  name      String   @id
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("telemetryCounter")
+}
+
 model Organization {
-  id          String       @id
-  name        String
-  slug        String
-  logo        String?
-  createdAt   DateTime
-  metadata    String?
-  website     String?
-  members     Member[]
-  invitations Invitation[]
+  id             String          @id
+  name           String
+  slug           String
+  logo           String?
+  createdAt      DateTime
+  metadata       String?
+  website        String?
+  members        Member[]
+  invitations    Invitation[]
+  mcpConnections McpConnection[]
+  mcpOauthStates McpOauthState[]
 
   @@unique([slug])
   @@map("organization")
@@ -700,4 +1687,35 @@ model SsoProvider {
 
   @@unique([providerId])
   @@map("ssoProvider")
+}
+
+model Apikey {
+  id                  String    @id
+  configId            String    @default("default")
+  name                String?
+  start               String?
+  referenceId         String
+  user                User      @relation(fields: [referenceId], references: [id], onDelete: Cascade)
+  prefix              String?
+  key                 String
+  refillInterval      Int?
+  refillAmount        Int?
+  lastRefillAt        DateTime?
+  enabled             Boolean?  @default(true)
+  rateLimitEnabled    Boolean?  @default(true)
+  rateLimitTimeWindow Int?
+  rateLimitMax        Int?
+  requestCount        Int?      @default(0)
+  remaining           Int?
+  lastRequest         DateTime?
+  expiresAt           DateTime?
+  createdAt           DateTime
+  updatedAt           DateTime
+  permissions         String?
+  metadata            String?
+
+  @@index([referenceId])
+  @@index([configId])
+  @@index([key])
+  @@map("apikey")
 }

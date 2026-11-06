@@ -6,9 +6,15 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@crm/ui/components/card";
-import type { ChartConfig } from "@crm/ui/components/chart";
-import { DashboardRow, StatGroup } from "@crm/ui/components/dashboard";
+import { ChartSwatch } from "@crm/ui/components/chart-swatch";
+import {
+	DashboardPanel,
+	DashboardRow,
+	StatGroup,
+} from "@crm/ui/components/dashboard";
+import { MetaRow } from "@crm/ui/components/meta-row";
 import { StatCard, type StatDelta } from "@crm/ui/components/stat-card";
+import { CHART_CONFIG } from "@crm/ui/lib/chart-config";
 import {
 	formatCount,
 	formatMoney,
@@ -17,16 +23,20 @@ import {
 } from "@crm/ui/lib/format";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { dealStageColor, dealStageLabel } from "@/components/crm/deal-stage";
-import { AreaTrend, DonutStat } from "@/components/dashboard-charts";
+import {
+	AreaTrend,
+	DonutStat,
+	type SeriesConfig,
+} from "@/components/dashboard-charts";
+import { dealStageChartColor, dealStageLabel } from "@/lib/deal-stage";
 import type { RouterOutputs } from "@/lib/trpc/types";
 import { useWorkspaceUrl } from "@/lib/use-workspace-url";
 
 type Summary = RouterOutputs["dashboard"]["summary"];
 
-const TREND_CONFIG: ChartConfig = {
-	won: { label: "Closed won", color: "var(--success)" },
-	created: { label: "New pipeline", color: "var(--chart-1)" },
+const TREND_CONFIG: SeriesConfig = {
+	won: { label: "Closed won", color: CHART_CONFIG.trend.won },
+	created: { label: "New pipeline", color: CHART_CONFIG.trend.created },
 };
 
 function changeDelta(
@@ -53,57 +63,86 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 		performance,
 		trend,
 		closingThisMonthTotal,
+		reportingCurrency,
+		unconverted,
 	} = summary;
+
+	const money = (cents: number) => formatMoneyCompact(cents, reportingCurrency);
+	const exact = (value: number | string) =>
+		formatMoney(Number(value), reportingCurrency);
 
 	const hasTrend = trend.some((point) => point.won > 0 || point.created > 0);
 
-	const stageSlices = pipeline.stages
-		.map((stage) => ({
-			key: stage.stage,
-			label: dealStageLabel(stage.stage),
-			value: stage.valueCents,
-			color: dealStageColor(stage.stage),
-			count: stage.count,
-		}))
-		.filter((slice) => slice.value > 0);
+	const stageSlices = pipeline.stages.flatMap((stage) =>
+		stage.valueCents > 0
+			? [
+					{
+						key: stage.stage,
+						label: dealStageLabel(stage.stage),
+						value: stage.valueCents,
+						color: dealStageChartColor(stage.stage),
+						count: stage.count,
+					},
+				]
+			: [],
+	);
 
 	return (
 		<div className="flex flex-col gap-6">
 			<StatGroup>
 				<StatCard
 					label="Closed won this month"
-					value={formatMoneyCompact(wonThisMonth.valueCents)}
+					value={money(wonThisMonth.valueCents)}
 					delta={changeDelta(
 						wonThisMonth.valueCents,
 						wonPrevMonth.valueCents,
 						"vs. last month",
 					)}
-					description={`${formatCount(wonThisMonth.count, "deal")} · ${formatMoneyCompact(wonPrevMonth.valueCents)} last month`}
+					description={
+						<MetaRow>
+							<span>{formatCount(wonThisMonth.count, "deal")}</span>
+							<span>{money(wonPrevMonth.valueCents)} last month</span>
+						</MetaRow>
+					}
 				/>
 				<StatCard
 					label="Open pipeline"
-					value={formatMoneyCompact(pipeline.totalCents)}
-					description={`${formatCount(pipeline.totalDeals, "deal")} in progress · ${formatMoneyCompact(closingThisMonthTotal.valueCents)} due this month`}
+					value={money(pipeline.totalCents)}
+					description={
+						<MetaRow>
+							<span>
+								{formatCount(pipeline.totalDeals, "deal")} in progress
+							</span>
+							<span>
+								{money(closingThisMonthTotal.valueCents)} due this month
+							</span>
+						</MetaRow>
+					}
 				/>
 				<StatCard
 					label={`Win rate (${performance.windowDays}d)`}
 					value={
 						performance.winRate === null
-							? "—"
+							? "None yet"
 							: formatPercent(performance.winRate)
 					}
 					description={
-						performance.wins + performance.losses === 0
-							? "Nothing has closed yet"
-							: `${performance.wins} won · ${performance.losses} lost`
+						performance.wins + performance.losses === 0 ? (
+							"Nothing has closed yet"
+						) : (
+							<MetaRow>
+								<span>{performance.wins} won</span>
+								<span>{performance.losses} lost</span>
+							</MetaRow>
+						)
 					}
 				/>
 				<StatCard
 					label={`Average deal (${performance.windowDays}d)`}
 					value={
 						performance.avgDealCents === null
-							? "—"
-							: formatMoneyCompact(performance.avgDealCents)
+							? "None yet"
+							: money(performance.avgDealCents)
 					}
 					description={
 						performance.avgCycleDays === null
@@ -112,6 +151,24 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 					}
 				/>
 			</StatGroup>
+
+			{unconverted.count > 0 ? (
+				<p className="text-muted-foreground text-xs">
+					Every figure above is in {reportingCurrency}.{" "}
+					{formatCount(unconverted.count, "deal")} in{" "}
+					{unconverted.currencies.join(", ")}{" "}
+					{unconverted.count === 1 ? "is" : "are"} not included. There is no
+					rate to convert {unconverted.currencies.length === 1 ? "it" : "them"}{" "}
+					with.{" "}
+					<Link
+						href={workspaceUrl("/settings/currencies")}
+						className="underline hover:no-underline"
+					>
+						Set one
+					</Link>
+					.
+				</p>
+			) : null}
 
 			<DashboardRow split="hero">
 				<ChartPanel
@@ -124,13 +181,10 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 								data={trend}
 								config={TREND_CONFIG}
 								xKey="month"
-								height={196}
-								variant="gradient"
-								bloom="high"
+								height={CHART_CONFIG.height.dashboardTrend}
 								showLegend
-								formatValue={(value) =>
-									formatMoney(typeof value === "number" ? value : Number(value))
-								}
+								formatValue={exact}
+								label="Closed won and new pipeline by month"
 							/>
 						</div>
 					) : (
@@ -146,12 +200,11 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 						<div className="flex flex-1 flex-col justify-between gap-1 pt-4">
 							<DonutStat
 								data={stageSlices}
-								height={168}
-								centerValue={formatMoneyCompact(pipeline.totalCents)}
+								height={CHART_CONFIG.height.dashboardDonut}
+								centerValue={money(pipeline.totalCents)}
 								centerLabel="open"
-								formatValue={(value) =>
-									formatMoney(typeof value === "number" ? value : Number(value))
-								}
+								formatValue={exact}
+								label="Open pipeline value by stage"
 							/>
 							<ul className="flex flex-col px-5 pb-1 md:px-6">
 								{stageSlices.map((slice) => (
@@ -160,11 +213,7 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 											href={`${workspaceUrl("/deals")}?stage=${slice.key}`}
 											className="flex items-center gap-2.5 py-2 text-xs hover:underline"
 										>
-											<span
-												aria-hidden
-												className="size-1.5 shrink-0"
-												style={{ backgroundColor: slice.color }}
-											/>
+											<ChartSwatch color={slice.color} size="sm" />
 											<span className="min-w-0 flex-1 truncate">
 												{slice.label}
 											</span>
@@ -172,7 +221,7 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 												{slice.count}
 											</span>
 											<span className="w-14 shrink-0 text-right font-medium tabular-nums">
-												{formatMoneyCompact(slice.value)}
+												{money(slice.value)}
 											</span>
 										</Link>
 									</li>
@@ -203,7 +252,7 @@ function ChartPanel({
 				<CardTitle>{title}</CardTitle>
 				{description ? <CardDescription>{description}</CardDescription> : null}
 			</CardHeader>
-			<div className="flex flex-1 flex-col border">{children}</div>
+			<DashboardPanel>{children}</DashboardPanel>
 		</Card>
 	);
 }

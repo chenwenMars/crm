@@ -1,11 +1,15 @@
 import { notFound, unstable_rethrow } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
-import { AppHeader, AppHeaderFallback } from "@/components/app-header";
-import { AppIconRail, AppIconRailFallback } from "@/components/app-icon-rail";
+import { AccountMenu, AccountMenuFallback } from "@/components/account-menu";
 import { QuickSwitcher } from "@/components/crm/quick-switcher";
 import { RecordSheetHost } from "@/components/crm/record-sheet/record-sheet-host";
+import { RecordStackBoundary } from "@/components/crm/record-sheet/record-stack";
+import { EnrichmentQueue } from "@/components/enrichment-queue";
 import { MobileNavProvider } from "@/components/mobile-nav";
-import { requireGoogleAccess } from "@/lib/session";
+import { WorkspaceNav, WorkspaceNavFallback } from "@/components/workspace-nav";
+import { WorkspaceShell } from "@/components/workspace-shell";
+import { requireMailboxAccess } from "@/lib/session";
 import { HydrateClient } from "@/lib/trpc/hydrate";
 import { getServerQueryClient, getServerTrpc } from "@/lib/trpc/server";
 
@@ -15,17 +19,21 @@ export default function AppLayout({
 }: LayoutProps<"/[slug]">) {
 	return (
 		<MobileNavProvider>
-			<div className="isolate flex h-svh flex-col">
-				<Suspense fallback={<AppHeaderFallback />}>
-					<WorkspaceHeader params={params} />
-				</Suspense>
-
-				<div className="flex min-h-0 flex-1">
-					<Suspense fallback={<AppIconRailFallback />}>
-						<AppIconRail />
-					</Suspense>
+			<RecordStackBoundary>
+				<WorkspaceShell
+					sidebar={
+						<Suspense fallback={<WorkspaceNavFallback />}>
+							<WorkspaceSidebar />
+						</Suspense>
+					}
+					end={
+						<Suspense fallback={<AccountMenuFallback />}>
+							<WorkspaceAccount params={params} />
+						</Suspense>
+					}
+				>
 					{children}
-				</div>
+				</WorkspaceShell>
 
 				<Suspense fallback={null}>
 					<RecordSheetHost />
@@ -34,31 +42,45 @@ export default function AppLayout({
 				<Suspense fallback={null}>
 					<QuickSwitcher />
 				</Suspense>
-			</div>
+			</RecordStackBoundary>
 		</MobileNavProvider>
 	);
 }
 
-async function WorkspaceHeader({
+async function loadWorkspace() {
+	try {
+		return await getServerQueryClient().fetchQuery(
+			getServerTrpc().workspace.get.queryOptions(),
+		);
+	} catch (error) {
+		unstable_rethrow(error);
+		return null;
+	}
+}
+
+async function WorkspaceSidebar() {
+	await connection();
+	const workspace = await loadWorkspace();
+
+	return <WorkspaceNav initialWorkspace={workspace ?? undefined} />;
+}
+
+async function WorkspaceAccount({
 	params,
 }: Pick<LayoutProps<"/[slug]">, "params">) {
-	const [{ user }, { slug }] = await Promise.all([
-		requireGoogleAccess(),
+	await connection();
+	const [{ user }, { slug }, workspace] = await Promise.all([
+		requireMailboxAccess(),
 		params,
+		loadWorkspace(),
 	]);
-
-	const workspace = await getServerQueryClient()
-		.fetchQuery(getServerTrpc().workspace.get.queryOptions())
-		.catch((error: unknown) => {
-			unstable_rethrow(error);
-			return null;
-		});
 
 	if (workspace && workspace.slug !== slug) notFound();
 
 	return (
 		<HydrateClient>
-			<AppHeader
+			<EnrichmentQueue />
+			<AccountMenu
 				user={{
 					name: user.name,
 					email: user.email,

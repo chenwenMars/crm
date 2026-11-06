@@ -1,3 +1,4 @@
+import { apiError } from "@crm/telemetry";
 import {
 	type ArgumentsHost,
 	Catch,
@@ -51,11 +52,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
 				payload,
 				exception instanceof Error ? exception.stack : undefined,
 			);
+
+			apiError({ error: exception, route: routePattern(request), status });
 			return;
 		}
 
 		this.logger.debug(payload);
 	}
+}
+
+function routePattern(request: Request): string | null {
+	const route = (request as { route?: { path?: unknown } }).route;
+	return typeof route?.path === "string" ? route.path : null;
 }
 
 function describe(exception: unknown): string {
@@ -66,26 +74,31 @@ function describe(exception: unknown): string {
 	return typeof exception === "string" ? exception : "Unknown exception";
 }
 
+interface ErrorBody {
+	statusCode?: number;
+	message?: unknown;
+	requestId?: string;
+	[field: string]: unknown;
+}
+
 function body(
 	exception: unknown,
 	status: number,
 	requestId: string | undefined,
-): Record<string, unknown> {
-	const withRequestId = requestId ? { requestId } : {};
+): ErrorBody {
+	const reported = exceptionBody(exception, status);
 
+	return requestId ? { ...reported, requestId } : reported;
+}
+
+function exceptionBody(exception: unknown, status: number): ErrorBody {
 	if (!(exception instanceof HttpException)) {
-		return {
-			statusCode: status,
-			message: "Internal server error",
-			...withRequestId,
-		};
+		return { statusCode: status, message: "Internal server error" };
 	}
 
 	const original = exception.getResponse();
 
-	if (typeof original === "string") {
-		return { statusCode: status, message: original, ...withRequestId };
-	}
-
-	return { ...(original as Record<string, unknown>), ...withRequestId };
+	return typeof original === "string"
+		? { statusCode: status, message: original }
+		: { ...original };
 }

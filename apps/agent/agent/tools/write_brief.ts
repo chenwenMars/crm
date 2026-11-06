@@ -1,9 +1,11 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { changeWrite } from "../lib/approval";
 import type { Evidence, EvidenceKind } from "../lib/evidence";
 import { WEIGHTS } from "../lib/evidence";
 import { writeBrief } from "../lib/facts";
 import { focusOn } from "../lib/focus";
+import { assertResearchPurpose } from "../lib/session-purpose";
 
 const MAX_NARRATIVE = 400;
 
@@ -24,7 +26,7 @@ export default defineTool({
 			currentRole: z
 				.string()
 				.optional()
-				.describe('e.g. "CEO & Co-founder · Comp AI"'),
+				.describe('e.g. "CEO and Co-founder at Comp AI"'),
 			tenure: z.string().optional().describe('e.g. "2 yrs 3 mos"'),
 			previousRoles: z.array(z.string()).optional(),
 			seniority: z.string().optional().describe('e.g. "Founder / C-level"'),
@@ -47,7 +49,9 @@ export default defineTool({
 			.min(1),
 		sourceUrl: z.string().optional(),
 	}),
-	async execute(input) {
+	approval: changeWrite(),
+	async execute(input, ctx) {
+		assertResearchPurpose(ctx);
 		focusOn({ contactId: input.contactId });
 
 		const narrative = input.narrative.trim();

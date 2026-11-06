@@ -1,8 +1,16 @@
-export function formatCount(count: number, noun: string): string {
-	return `${count} ${count === 1 ? noun : `${noun}s`}`;
+export function formatCount(
+	count: number,
+	noun: string,
+	plural = `${noun}s`,
+): string {
+	return `${count} ${count === 1 ? noun : plural}`;
 }
 
 const WELL_FORMED_CURRENCY_CODE = /^[A-Za-z]{3}$/;
+const percentFormat = new Intl.NumberFormat("en-US", {
+	style: "percent",
+	maximumFractionDigits: 0,
+});
 
 function displayCurrencyCode(currency: string): string {
 	return WELL_FORMED_CURRENCY_CODE.test(currency)
@@ -10,11 +18,32 @@ function displayCurrencyCode(currency: string): string {
 		: "USD";
 }
 
+const currencyDigits = new Map<string, number>();
+
+function fractionDigits(code: string): number {
+	const cached = currencyDigits.get(code);
+	if (cached !== undefined) return cached;
+
+	const digits =
+		new Intl.NumberFormat("en-US", {
+			style: "currency",
+			currency: code,
+		}).resolvedOptions().maximumFractionDigits ?? 2;
+
+	currencyDigits.set(code, digits);
+	return digits;
+}
+
 export function formatMoney(cents: number, currency = "usd"): string {
+	const code = displayCurrencyCode(currency);
+	const whole = cents % 100 === 0;
+	const digits = fractionDigits(code);
+
 	return new Intl.NumberFormat(undefined, {
 		style: "currency",
-		currency: displayCurrencyCode(currency),
-		minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
+		currency: code,
+		minimumFractionDigits: whole ? 0 : Math.min(2, digits),
+		maximumFractionDigits: whole ? 0 : digits,
 	}).format(cents / 100);
 }
 
@@ -28,13 +57,10 @@ export function formatMoneyCompact(cents: number, currency = "usd"): string {
 }
 
 export function formatPercent(rate: number): string {
-	return new Intl.NumberFormat(undefined, {
-		style: "percent",
-		maximumFractionDigits: 0,
-	}).format(rate);
+	return percentFormat.format(rate);
 }
 
-const dayFormat = new Intl.DateTimeFormat(undefined, {
+const dayFormat = new Intl.DateTimeFormat("en-US", {
 	month: "short",
 	day: "numeric",
 	year: "numeric",
@@ -58,34 +84,7 @@ export function fromDay(value: string | null | undefined): Date | undefined {
 
 export function formatDay(value: string | null | undefined): string {
 	const date = fromDay(value);
-	return date ? dayFormat.format(date) : (value ?? "—");
-}
-
-export function relativeTimeFromIso(iso: string | null | undefined): string {
-	if (!iso) return "—";
-	const then = new Date(iso).getTime();
-	if (!Number.isFinite(then)) return "—";
-	const diff = Date.now() - then;
-	const abs = Math.abs(diff);
-	const min = 60_000;
-	const hour = 60 * min;
-	const day = 24 * hour;
-	if (abs < min) return "just now";
-	const distance =
-		abs < hour
-			? `${Math.round(abs / min)}m`
-			: abs < day
-				? `${Math.round(abs / hour)}h`
-				: abs < 30 * day
-					? `${Math.round(abs / day)}d`
-					: null;
-	if (distance === null) {
-		return new Date(iso).toLocaleDateString(undefined, {
-			month: "short",
-			day: "numeric",
-		});
-	}
-	return diff < 0 ? `in ${distance}` : `${distance} ago`;
+	return date ? dayFormat.format(date) : (value ?? "");
 }
 
 export function initialsFromName(name: string | null | undefined): string {

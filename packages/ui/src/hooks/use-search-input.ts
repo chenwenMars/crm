@@ -1,29 +1,31 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useMountEffect } from "@crm/ui/hooks/use-mount-effect";
+import { useRef, useState } from "react";
 
 export function useSearchInput(
 	committed: string,
 	commit: (value: string) => void,
 	delayMs = 250,
 ) {
-	const [value, setValue] = useState(committed);
+	const [state, setState] = useState({ committed, value: committed });
+	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	let value = state.value;
 
-	const commitRef = useRef(commit);
-	commitRef.current = commit;
+	if (state.committed !== committed) {
+		value = committed;
+		setState({ committed, value: committed });
+	}
 
-	const committedRef = useRef(committed);
-	committedRef.current = committed;
+	useMountEffect(() => () => {
+		if (timer.current) clearTimeout(timer.current);
+	});
 
-	useEffect(() => {
-		setValue(committed);
-	}, [committed]);
+	const change = (next: string) => {
+		setState({ committed, value: next });
+		if (timer.current) clearTimeout(timer.current);
+		timer.current = setTimeout(() => commit(next), delayMs);
+	};
 
-	useEffect(() => {
-		if (value === committedRef.current) return;
-		const timer = setTimeout(() => commitRef.current(value), delayMs);
-		return () => clearTimeout(timer);
-	}, [value, delayMs]);
-
-	return [value, setValue] as const;
+	return [value, change] as const;
 }

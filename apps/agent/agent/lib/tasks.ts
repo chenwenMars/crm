@@ -1,11 +1,15 @@
-import { db, Prisma } from "@crm/db";
+import { db, type Prisma } from "@crm/db";
+import { MAX_ATTEMPTS, RETIRED_OUTCOME } from "@crm/db/agent-tasks";
+import { DISPATCH } from "./dispatch-config";
 
 export type LeasedTask = {
 	id: string;
 	contactId: string | null;
 	companyId: string | null;
+	dealId: string | null;
 	kind: string;
 	reason: string;
+	payload: Prisma.JsonValue | null;
 	budget: number;
 	attempts: number;
 	priority: number;
@@ -16,14 +20,11 @@ export type TaskSubject = {
 	id: string;
 	contactId: string | null;
 	companyId: string | null;
+	dealId: string | null;
 	kind: string;
 };
 
-const LEASE_MS = 10 * 60_000;
-
-export const MAX_ATTEMPTS = 3;
-
-export { DIRECT_KINDS } from "@crm/db/agent-tasks";
+const LEASE_MS = DISPATCH.task.leaseMs;
 
 export async function claimDue(
 	limit: number,
@@ -33,10 +34,10 @@ export async function claimDue(
 	const now = new Date();
 	const until = new Date(now.getTime() + leaseMs);
 
-	const list = "only" in kinds ? kinds.only : kinds.except;
+	const list = "only" in kinds ? [...kinds.only] : [...kinds.except];
 	if ("only" in kinds && list.length === 0) return [];
 
-	const match = Prisma.sql`t2.kind ${"only" in kinds ? Prisma.sql`IN` : Prisma.sql`NOT IN`} (${Prisma.join(list)})`;
+	const onlyMode = "only" in kinds;
 
 	const claimed = await db.$queryRaw<LeasedTask[]>`
 		UPDATE "agentTask" AS t
@@ -49,13 +50,16 @@ export async function claimDue(
 				AND t2."dueAt" <= ${now}
 				AND (t2."leasedUntil" IS NULL OR t2."leasedUntil" < ${now})
 				AND t2."attempts" < ${MAX_ATTEMPTS}
-				AND ${match}
+				AND CASE
+					WHEN ${onlyMode}::boolean THEN t2.kind = ANY(${list}::text[])
+					ELSE t2.kind <> ALL(${list}::text[])
+				END
 			ORDER BY t2."priority" DESC, t2."dueAt" ASC
 			LIMIT ${limit}
 			FOR UPDATE SKIP LOCKED
 		) AS due
 		WHERE t.id = due.id
-		RETURNING t.id, t."contactId", t."companyId", t.kind, t.reason,
+		RETURNING t.id, t."contactId", t."companyId", t."dealId", t.kind, t.reason, t.payload,
 			t.budget, t.attempts, t.priority, t."dueAt";
 	`;
 
@@ -64,17 +68,26 @@ export async function claimDue(
 	);
 }
 
-export async function retireExhausted(): Promise<TaskSubject[]> {
+export async function retireExhausted(
+	limit: number = DISPATCH.reconcile.retire,
+): Promise<TaskSubject[]> {
 	const now = new Date();
 
 	return db.$queryRaw<TaskSubject[]>`
 		UPDATE "agentTask" AS t
 		SET "finishedAt" = ${now},
-			"outcome" = ${`Gave up after ${MAX_ATTEMPTS} attempts: the session never reported back.`}
-		WHERE t."finishedAt" IS NULL
-			AND t."attempts" >= ${MAX_ATTEMPTS}
-			AND (t."leasedUntil" IS NULL OR t."leasedUntil" < ${now})
-		RETURNING t.id, t."contactId", t."companyId", t.kind;
+			"outcome" = ${RETIRED_OUTCOME}
+		WHERE t.id IN (
+			SELECT c.id
+			FROM "agentTask" AS c
+			WHERE c."finishedAt" IS NULL
+				AND c."attempts" >= ${MAX_ATTEMPTS}
+				AND (c."leasedUntil" IS NULL OR c."leasedUntil" < ${now})
+			ORDER BY c."dueAt" ASC
+			LIMIT ${limit}
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING t.id, t."contactId", t."companyId", t."dealId", t.kind;
 	`;
 }
 
@@ -88,7 +101,7 @@ export async function completeTask(
 		data: {
 			finishedAt: new Date(),
 			outcome: outcome.slice(0, 500),
-			...(sessionId ? { sessionId } : {}),
+			sessionId: sessionId || undefined,
 		},
 	});
 
@@ -96,14 +109,26 @@ export async function completeTask(
 
 	return db.agentTask.findUnique({
 		where: { id: taskId },
-		select: { id: true, contactId: true, companyId: true, kind: true },
+		select: {
+			id: true,
+			contactId: true,
+			companyId: true,
+			dealId: true,
+			kind: true,
+		},
 	});
 }
 
 export async function taskSubject(taskId: string): Promise<TaskSubject | null> {
 	return db.agentTask.findUnique({
 		where: { id: taskId },
-		select: { id: true, contactId: true, companyId: true, kind: true },
+		select: {
+			id: true,
+			contactId: true,
+			companyId: true,
+			dealId: true,
+			kind: true,
+		},
 	});
 }
 
@@ -120,8 +145,10 @@ export async function noteSession(
 export async function scheduleTask(input: {
 	contactId?: string | null;
 	companyId?: string | null;
+	dealId?: string | null;
 	kind: string;
 	reason: string;
+	payload?: Prisma.InputJsonValue | null;
 	dueAt: Date;
 	priority?: number;
 	budget?: number;
@@ -132,6 +159,7 @@ export async function scheduleTask(input: {
 			finishedAt: null,
 			contactId: input.contactId ?? undefined,
 			companyId: input.companyId ?? undefined,
+			dealId: input.dealId ?? undefined,
 		},
 		select: { id: true },
 	});
@@ -148,8 +176,10 @@ export async function scheduleTask(input: {
 		data: {
 			contactId: input.contactId ?? null,
 			companyId: input.companyId ?? null,
+			dealId: input.dealId ?? null,
 			kind: input.kind,
 			reason: input.reason,
+			payload: input.payload ?? undefined,
 			dueAt: input.dueAt,
 			priority: input.priority ?? 0,
 			budget: input.budget ?? 4,

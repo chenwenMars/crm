@@ -1,9 +1,11 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { changeWrite } from "../lib/approval";
 import { personForVerification } from "../lib/crm";
 import type { Evidence } from "../lib/evidence";
 import { recordFact } from "../lib/facts";
 import { focusOn } from "../lib/focus";
+import { assertResearchPurpose } from "../lib/session-purpose";
 import { parseSocialUrl, verifyGithub, verifyX } from "../lib/socials";
 
 export default defineTool({
@@ -22,7 +24,9 @@ export default defineTool({
 				"A candidate github.com profile URL from find_contact_socials.",
 			),
 	}),
-	async execute({ contactId, twitterUrl, githubUrl }) {
+	approval: changeWrite(),
+	async execute({ contactId, twitterUrl, githubUrl }, ctx) {
+		assertResearchPurpose(ctx);
 		focusOn({ contactId });
 
 		const person = await personForVerification(contactId);

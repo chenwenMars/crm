@@ -1,5 +1,3 @@
-import type { Metadata } from "next";
-import { Suspense } from "react";
 import {
 	PageShell,
 	PageShellContent,
@@ -8,11 +6,15 @@ import {
 	PageShellHeading,
 	PageShellLoading,
 	PageShellTitle,
-} from "@/components/page-shell";
+} from "@crm/ui/components/page-shell";
+import { SettingsColumn } from "@crm/ui/components/settings-card";
+import type { Metadata } from "next";
+import { Suspense } from "react";
 import { requireSession } from "@/lib/session";
 import { HydrateClient } from "@/lib/trpc/hydrate";
 import { getServerQueryClient, getServerTrpc } from "@/lib/trpc/server";
 import { AgentModel } from "./agent-model";
+import { ArchiveRetention } from "./archive-retention";
 import { ResearchKey } from "./research-key";
 import { WorkspaceForm } from "./workspace-form";
 
@@ -22,7 +24,7 @@ export const metadata: Metadata = {
 
 export default function GeneralSettingsPage() {
 	return (
-		<PageShell>
+		<PageShell width="narrow">
 			<PageShellHeader>
 				<PageShellHeading>
 					<PageShellTitle>General</PageShellTitle>
@@ -33,7 +35,7 @@ export default function GeneralSettingsPage() {
 			</PageShellHeader>
 
 			<PageShellContent>
-				<Suspense fallback={<PageShellLoading />}>
+				<Suspense fallback={<PageShellLoading shape="settings" />}>
 					<Settings />
 				</Suspense>
 			</PageShellContent>
@@ -52,15 +54,17 @@ async function Settings() {
 		queryClient.prefetchQuery(trpc.settings.agentModel.queryOptions()),
 		queryClient.prefetchQuery(trpc.settings.modelCatalog.queryOptions()),
 		queryClient.prefetchQuery(trpc.settings.researchKey.queryOptions()),
+		queryClient.prefetchQuery(trpc.settings.archiveRetention.queryOptions()),
 	]);
 
 	return (
 		<HydrateClient>
-			<div className="flex max-w-3xl flex-col gap-6">
+			<SettingsColumn>
 				<WorkspaceForm />
 				<ResearchKey />
+				<ArchiveRetention />
 				<AgentModel />
-			</div>
+			</SettingsColumn>
 		</HydrateClient>
 	);
 }

@@ -10,12 +10,22 @@ import {
 import type { z } from "zod";
 import type { AuthedTrpcContext } from "../trpc/context.types";
 import { AuthMiddleware } from "../trpc/middlewares/auth.middleware";
+import { restMeta } from "../trpc/openapi";
 import {
 	activityCreateInput,
+	activityCreateOutput,
+	activityUpdateInput,
+	activityUpdateOutput,
 	completeInput,
+	completeOutput,
 	myTasksInput,
+	myTasksOutput,
+	taskListInput,
+	taskListOutput,
 	timelineCountsInput,
+	timelineCountsOutput,
 	timelineInput,
+	timelineOutput,
 } from "./activities.contracts";
 import { ActivitiesService } from "./activities.service";
 
@@ -26,17 +36,29 @@ export class ActivitiesRouter {
 		@Inject(ActivitiesService) private readonly activities: ActivitiesService,
 	) {}
 
-	@Query({ input: timelineInput })
+	@Query({
+		input: timelineInput,
+		output: timelineOutput,
+		meta: restMeta("GET", "/activities", ["Activities"]),
+	})
 	async timeline(@Input() input: z.infer<typeof timelineInput>) {
 		return this.activities.timeline(input);
 	}
 
-	@Query({ input: timelineCountsInput })
+	@Query({
+		input: timelineCountsInput,
+		output: timelineCountsOutput,
+		meta: restMeta("GET", "/activities/counts", ["Activities"]),
+	})
 	async timelineCounts(@Input() input: z.infer<typeof timelineCountsInput>) {
 		return this.activities.timelineCounts(input);
 	}
 
-	@Query({ input: myTasksInput })
+	@Query({
+		input: myTasksInput,
+		output: myTasksOutput,
+		meta: restMeta("GET", "/activities/my-tasks", ["Activities"]),
+	})
 	async myTasks(
 		@Ctx() ctx: AuthedTrpcContext,
 		@Input() input: z.infer<typeof myTasksInput>,
@@ -44,7 +66,20 @@ export class ActivitiesRouter {
 		return this.activities.myTasks(input, ctx.user.id);
 	}
 
-	@Mutation({ input: activityCreateInput })
+	@Query({
+		input: taskListInput,
+		output: taskListOutput,
+		meta: restMeta("GET", "/activities/tasks", ["Activities"]),
+	})
+	async tasks(@Input() input: z.infer<typeof taskListInput>) {
+		return this.activities.tasks(input);
+	}
+
+	@Mutation({
+		input: activityCreateInput,
+		output: activityCreateOutput,
+		meta: restMeta("POST", "/activities", ["Activities"]),
+	})
 	async create(
 		@Ctx() ctx: AuthedTrpcContext,
 		@Input() input: z.infer<typeof activityCreateInput>,
@@ -52,7 +87,20 @@ export class ActivitiesRouter {
 		return this.activities.create(input, ctx.user.id);
 	}
 
-	@Mutation({ input: completeInput })
+	@Mutation({
+		input: activityUpdateInput,
+		output: activityUpdateOutput,
+		meta: restMeta("PATCH", "/activities/{id}", ["Activities"]),
+	})
+	async update(@Input() input: z.infer<typeof activityUpdateInput>) {
+		return this.activities.update(input);
+	}
+
+	@Mutation({
+		input: completeInput,
+		output: completeOutput,
+		meta: restMeta("PATCH", "/activities/{id}/complete", ["Activities"]),
+	})
 	async complete(@Input() input: z.infer<typeof completeInput>) {
 		return this.activities.complete(input.id, input.completed);
 	}

@@ -1,71 +1,103 @@
 "use client";
 
-import { authClient, signOut } from "@crm/auth/client";
-import { SYNC_SCOPES } from "@crm/auth/scopes";
+import { authClient } from "@crm/auth/client";
+import {
+	type MailboxProviderId,
+	MICROSOFT_SYNC_SCOPES,
+	SYNC_SCOPES,
+} from "@crm/auth/scopes";
+import { AuthButton } from "@crm/ui/components/auth-button";
 import GoogleLogo from "@crm/ui/components/brand-logos/google";
-import { Button } from "@crm/ui/components/button";
-import { Spinner } from "@crm/ui/components/spinner";
+import MicrosoftLogo from "@crm/ui/components/brand-logos/microsoft";
+import { LogoSpinner } from "@crm/ui/components/logo-spinner";
+import type { FC, SVGProps } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { signOutAndRedirect } from "@/lib/sign-out";
 
-export function GrantAccess() {
-	const [pending, setPending] = useState(false);
+type ProviderGrant = {
+	label: string;
+	scopes: readonly string[];
+	Logo: FC<SVGProps<SVGSVGElement>>;
+};
 
-	async function handleGrant() {
-		setPending(true);
+const PROVIDERS = {
+	google: {
+		label: "Grant Google access",
+		scopes: [...SYNC_SCOPES],
+		Logo: GoogleLogo,
+	},
+	microsoft: {
+		label: "Grant Microsoft access",
+		scopes: [...MICROSOFT_SYNC_SCOPES],
+		Logo: MicrosoftLogo,
+	},
+} as const satisfies Record<MailboxProviderId, ProviderGrant>;
+
+export function GrantAccess({
+	providers,
+}: {
+	providers: readonly MailboxProviderId[];
+}) {
+	const [pending, setPending] = useState<MailboxProviderId | null>(null);
+
+	function fail(message?: string) {
+		setPending(null);
+		toast.error(message ?? "Could not reach the provider.");
+	}
+
+	async function handleGrant(provider: MailboxProviderId) {
+		setPending(provider);
 
 		const origin = window.location.origin;
 
 		const { error } = await authClient.linkSocial({
-			provider: "google",
-			scopes: [...SYNC_SCOPES],
+			provider,
+			scopes: [...PROVIDERS[provider].scopes],
 			callbackURL: `${origin}/`,
 			errorCallbackURL: `${origin}/grant-access`,
 		});
 
-		if (error) {
-			toast.error(error.message ?? "Could not reach Google.");
-			setPending(false);
-		}
+		if (error) fail(error.message);
 	}
 
-	async function handleSignOut() {
-		const { error } = await signOut();
-
-		if (error) {
-			toast.error(error.message ?? "Could not sign out.");
-			return;
-		}
-
-		window.location.assign("/sign-in");
-	}
+	const single = providers.length === 1;
 
 	return (
 		<div className="flex flex-col gap-3">
-			<Button
-				className="w-full"
-				disabled={pending}
-				onClick={handleGrant}
-				type="button"
-			>
-				{pending ? (
-					<Spinner data-icon="inline-start" />
-				) : (
-					<GoogleLogo data-icon="inline-start" className="size-4" />
-				)}
-				Grant access
-			</Button>
+			{providers.map((provider) => {
+				const { label, Logo } = PROVIDERS[provider];
 
-			<Button
+				return (
+					<AuthButton
+						key={provider}
+						className="w-full"
+						disabled={pending !== null}
+						onClick={() => {
+							handleGrant(provider).catch(() => fail());
+						}}
+						type="button"
+					>
+						{pending === provider ? (
+							<LogoSpinner data-icon="inline-start" />
+						) : (
+							<Logo data-icon="inline-start" className="size-4" />
+						)}
+						{single ? "Grant access" : label}
+					</AuthButton>
+				);
+			})}
+
+			<AuthButton
 				className="w-full"
 				onClick={() => {
-					handleSignOut().catch(() => toast.error("Could not sign out."));
+					signOutAndRedirect().catch(() => toast.error("Could not sign out."));
 				}}
 				type="button"
 				variant="ghost"
 			>
 				Sign out
-			</Button>
+			</AuthButton>
 		</div>
 	);
 }

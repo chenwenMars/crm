@@ -1,25 +1,32 @@
 "use client";
 
-import ArrowDown from "@carbon/icons-react/es/ArrowDown";
-import ArrowsVertical from "@carbon/icons-react/es/ArrowsVertical";
-import ArrowUp from "@carbon/icons-react/es/ArrowUp";
-import ChevronDown from "@carbon/icons-react/es/ChevronDown";
-import ChevronRight from "@carbon/icons-react/es/ChevronRight";
-import Column from "@carbon/icons-react/es/Column";
-import Filter from "@carbon/icons-react/es/Filter";
 import { Button } from "@crm/ui/components/button";
+import { Checkbox } from "@crm/ui/components/checkbox";
+import {
+	Command,
+	CommandEmpty,
+	CommandGroup,
+	CommandInput,
+	CommandItem,
+	CommandList,
+} from "@crm/ui/components/command";
 import {
 	DropdownMenu,
 	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
+	DropdownMenuGroup,
+	DropdownMenuItem,
 	DropdownMenuLabel,
 	DropdownMenuRadioGroup,
 	DropdownMenuRadioItem,
 	DropdownMenuSeparator,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
 	DropdownMenuTrigger,
 } from "@crm/ui/components/dropdown-menu";
-import { Spinner } from "@crm/ui/components/spinner";
-import { TablePagination } from "@crm/ui/components/table-pagination";
+import { useOverflowTooltip } from "@crm/ui/components/overflow-tooltip";
+import { SkeletonLine } from "@crm/ui/components/skeleton-lines";
 import {
 	Table,
 	TableBody,
@@ -28,18 +35,46 @@ import {
 	TableHeader,
 	TableRow,
 } from "@crm/ui/components/table";
-import { ROW_ACCENT, ROW_ACCENT_EXPANDABLE } from "@crm/ui/lib/row-accent";
+import { TablePagination } from "@crm/ui/components/table-pagination";
+import { useMountEffect } from "@crm/ui/hooks/use-mount-effect";
+import type { TableSelection } from "@crm/ui/hooks/use-table-selection";
+import { ROW_ACCENT } from "@crm/ui/lib/row-accent";
 import type { TableQueryState } from "@crm/ui/lib/table-query";
 import { cn } from "@crm/ui/lib/utils";
+import {
+	ArrowDownIcon,
+	ArrowUpDownIcon,
+	ArrowUpIcon,
+	ChevronDownIcon,
+	ChevronRightIcon,
+	Columns3Icon,
+	LayoutListIcon,
+	ListFilterIcon,
+} from "lucide-react";
 import { parseAsArrayOf, parseAsString, useQueryState } from "nuqs";
 import {
 	Fragment,
 	type ReactNode,
 	useDeferredValue,
 	useId,
-	useMemo,
 	useState,
 } from "react";
+
+export type ColumnWidth =
+	| "px"
+	| "12"
+	| "14"
+	| "24"
+	| "28"
+	| "32"
+	| "36"
+	| "40"
+	| "42"
+	| "44"
+	| "56"
+	| "64";
+
+export type TableSize = "sm" | "md" | "lg" | "xl" | "2xl";
 
 export type DataTableColumn<TRow> = {
 	id: string;
@@ -47,23 +82,28 @@ export type DataTableColumn<TRow> = {
 	cell: (row: TRow) => ReactNode;
 	label?: string;
 	sortable?: boolean;
-	width?: string;
+	width?: ColumnWidth | { sm: ColumnWidth };
 	align?: "left" | "right" | "center";
-	headClassName?: string;
-	cellClassName?: string;
 	hideable?: boolean;
 	defaultHidden?: boolean;
-	hideBelow?: "sm" | "md" | "lg";
+	hideBelow?: TableSize;
+	lines?: 1 | 2;
 };
 
 export type DataTableFacet = {
 	id: string;
 	label: string;
 	options: { value: string; label: string }[];
+	searchable?: boolean;
+	search?: string;
+	onSearchChange?: (search: string) => void;
+	stale?: boolean;
+	empty?: ReactNode;
 };
 
 export type DataTableTabs = {
 	id: string;
+	label?: string;
 	allLabel?: string;
 	options: { value: string; label: string }[];
 };
@@ -76,6 +116,12 @@ export type DataTableExpandable<TRow, TSub> = {
 	onSubRowClick?: (sub: TSub, row: TRow) => void;
 };
 
+export type DataTableSelection<TRow> = {
+	state: TableSelection;
+	actions: ReactNode;
+	rowLabel?: (row: TRow) => string;
+};
+
 export type DataTableProps<TRow, TSub> = {
 	query: TableQueryState;
 	columns: DataTableColumn<TRow>[];
@@ -86,29 +132,148 @@ export type DataTableProps<TRow, TSub> = {
 	loading?: boolean;
 	facets?: DataTableFacet[];
 	tabs?: DataTableTabs;
-	onRowClick?: (row: TRow) => void;
+	onRowClick?: (row: TRow, orderedRows: readonly TRow[]) => void;
 	onRowHover?: (row: TRow) => void;
 	expandable?: DataTableExpandable<TRow, TSub>;
+	selection?: DataTableSelection<TRow>;
 	actions?: ReactNode;
 	leadingActions?: ReactNode;
 	search?: ReactNode;
 	meta?: ReactNode;
 	empty?: ReactNode;
+	label?: string;
 	className?: string;
-	tableClassName?: string;
 };
 
-const HIDE_BELOW_CLASS = {
-	sm: "hidden sm:table-cell",
-	md: "hidden md:table-cell",
-	lg: "hidden lg:table-cell",
-} as const;
+type ColumnLayout = Pick<
+	DataTableColumn<unknown>,
+	"width" | "align" | "hideBelow" | "lines"
+>;
 
-const ALIGN_CLASS = {
-	left: "",
-	right: "text-right",
-	center: "text-center",
-} as const;
+function columnLayout({ width, align, hideBelow }: ColumnLayout) {
+	return {
+		"data-align": align,
+		"data-hide-below": hideBelow,
+		"data-width": typeof width === "string" ? width : undefined,
+		"data-width-sm": typeof width === "object" ? width.sm : undefined,
+	};
+}
+
+const COLUMN_LAYOUT_CLASS = cn(
+	"data-[align=center]:text-center data-[align=right]:text-right data-[align=right]:tabular-nums",
+	"data-[hide-below=sm]:hidden @xl/table:data-[hide-below=sm]:table-cell",
+	"data-[hide-below=md]:hidden @3xl/table:data-[hide-below=md]:table-cell",
+	"data-[hide-below=lg]:hidden @4xl/table:data-[hide-below=lg]:table-cell",
+	"data-[hide-below=xl]:hidden @5xl/table:data-[hide-below=xl]:table-cell",
+	"data-[hide-below=2xl]:hidden @6xl/table:data-[hide-below=2xl]:table-cell",
+	"data-[width=px]:w-px data-[width=12]:w-12 data-[width=14]:w-14 data-[width=24]:w-24 data-[width=28]:w-28 data-[width=32]:w-32",
+	"data-[width=36]:w-36 data-[width=40]:w-40 data-[width=42]:w-42 data-[width=44]:w-44 data-[width=56]:w-56 data-[width=64]:w-64",
+	"@xl/table:data-[width-sm=px]:w-px @xl/table:data-[width-sm=12]:w-12 @xl/table:data-[width-sm=14]:w-14 @xl/table:data-[width-sm=24]:w-24 @xl/table:data-[width-sm=28]:w-28 @xl/table:data-[width-sm=32]:w-32",
+	"@xl/table:data-[width-sm=36]:w-36 @xl/table:data-[width-sm=40]:w-40 @xl/table:data-[width-sm=42]:w-42 @xl/table:data-[width-sm=44]:w-44 @xl/table:data-[width-sm=56]:w-56 @xl/table:data-[width-sm=64]:w-64",
+);
+
+const COLUMN_HEAD_CLASS = cn(
+	"h-10 overflow-hidden px-3 font-medium text-13 text-muted-foreground",
+	COLUMN_LAYOUT_CLASS,
+);
+
+const COLUMN_CELL_CLASS = cn("overflow-hidden px-3", COLUMN_LAYOUT_CLASS);
+
+const TABLE_CLASS =
+	"table-fixed [&_td:first-child]:pl-4 [&_th:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th:last-child]:pr-4";
+
+const TABLE_CONTAINER_CLASS =
+	"min-h-0 overflow-auto rounded-md bg-card shadow-border";
+
+const TABLE_HEADER_CLASS =
+	"sticky top-0 z-10 bg-card [&_th]:bg-card [&_tr]:border-0 [&_tr]:shadow-divider";
+
+function TableFrame({
+	label,
+	overlay,
+	children,
+}: {
+	label?: string;
+	overlay: ReactNode;
+	children: ReactNode;
+}) {
+	return (
+		<section
+			aria-label={label}
+			data-slot="table-frame"
+			onKeyUp={(event) => {
+				if (event.key === "Tab") delete event.currentTarget.dataset.pointer;
+			}}
+			onPointerDown={(event) => {
+				event.currentTarget.dataset.pointer = "";
+			}}
+			className={cn(
+				"relative w-full outline-hidden focus-visible:not-data-pointer:outline-2 focus-visible:not-data-pointer:outline-solid focus-visible:not-data-pointer:outline-offset-0 focus-visible:not-data-pointer:outline-ring [&>[data-slot=table-container]]:overflow-visible",
+				TABLE_CONTAINER_CLASS,
+				overlay && "min-h-80",
+			)}
+			tabIndex={0}
+		>
+			{children}
+			{overlay}
+		</section>
+	);
+}
+
+const TABLE_EMPTY_OVERLAY_CLASS =
+	"absolute inset-0 flex items-center justify-center px-4 py-8 text-center";
+
+const LOADING_ROW_COUNT = 5;
+
+const NARROW_TABLE_COLUMNS = 3;
+
+function LoadingRows({
+	columns,
+	selectable,
+	expandable,
+}: {
+	columns: (ColumnLayout & { id: string })[];
+	selectable: boolean;
+	expandable: boolean;
+}) {
+	const detailColumn = Math.max(
+		0,
+		columns.findIndex((column) => !column.width),
+	);
+
+	return Array.from({ length: LOADING_ROW_COUNT }, (_, index) => (
+		<TableRow
+			className="hover:bg-transparent"
+			data-slot="table-loading-row"
+			key={index}
+		>
+			{selectable ? (
+				<TableCell
+					className={cn("w-10 px-3 py-3", COLUMN_LAYOUT_CLASS)}
+					data-hide-below="sm"
+				/>
+			) : null}
+			{expandable ? <TableCell className="w-10 px-3 py-3" /> : null}
+			{columns.map((column, position) => (
+				<TableCell
+					key={column.id}
+					{...columnLayout(column)}
+					className={cn(COLUMN_CELL_CLASS, "py-3")}
+				>
+					<div
+						className="flex min-h-5 flex-col justify-center gap-2 data-[align=right]:items-end"
+						data-align={column.align}
+					>
+						<SkeletonLine width={column.width === "px" ? "24" : "two-thirds"} />
+						{(column.lines ?? (position === detailColumn ? 2 : 1)) === 2 ? (
+							<SkeletonLine size="sm" width="40" />
+						) : null}
+					</div>
+				</TableCell>
+			))}
+		</TableRow>
+	));
+}
 
 function columnLabel<TRow>(column: DataTableColumn<TRow>): string {
 	if (column.label) return column.label;
@@ -126,13 +291,196 @@ function SortIndicator({
 		<span className="text-muted-foreground">
 			{active ? (
 				dir === "asc" ? (
-					<ArrowUp size={12} />
+					<ArrowUpIcon size={12} />
 				) : (
-					<ArrowDown size={12} />
+					<ArrowDownIcon size={12} />
 				)
 			) : (
-				<ArrowsVertical size={12} className="opacity-40" />
+				<ArrowUpDownIcon
+					size={12}
+					className="opacity-0 transition-opacity group-hover/button:opacity-40 group-focus-visible/button:opacity-40"
+				/>
 			)}
+		</span>
+	);
+}
+
+function toggle(selected: string[], value: string, checked: boolean): string[] {
+	return checked ? [...selected, value] : selected.filter((v) => v !== value);
+}
+
+function FacetCount({
+	counts,
+	value,
+}: {
+	counts?: Record<string, number>;
+	value: string;
+}) {
+	if (counts === undefined) return null;
+
+	return (
+		<span className="ml-2 shrink-0 text-13 text-muted-foreground tabular-nums">
+			{counts[value] ?? 0}
+		</span>
+	);
+}
+
+function FacetSubmenu({
+	facet,
+	selected,
+	counts,
+	onChange,
+}: {
+	facet: DataTableFacet;
+	selected: string[];
+	counts?: Record<string, number>;
+	onChange: (values: string[]) => void;
+}) {
+	return (
+		<DropdownMenuSub>
+			<DropdownMenuSubTrigger>
+				<span className="flex-1">{facet.label}</span>
+				{selected.length > 0 && (
+					<span className="tabular-nums opacity-60">({selected.length})</span>
+				)}
+			</DropdownMenuSubTrigger>
+			<DropdownMenuSubContent
+				className={cn(
+					"max-h-72 min-w-52 overflow-hidden",
+					facet.searchable && "p-0",
+				)}
+				sideOffset={4}
+			>
+				{facet.searchable ? (
+					<Command
+						shouldFilter={facet.onSearchChange === undefined}
+						className="max-h-72"
+					>
+						<CommandInput
+							placeholder={`Search ${facet.label.toLowerCase()}…`}
+							value={facet.search}
+							onValueChange={facet.onSearchChange}
+							onKeyDown={(event) => event.stopPropagation()}
+						/>
+						<CommandList>
+							<CommandEmpty>{facet.empty ?? "Nothing matches."}</CommandEmpty>
+							<CommandGroup>
+								{facet.options.map((option) => {
+									const checked = selected.includes(option.value);
+									return (
+										<CommandItem
+											key={option.value}
+											value={option.label}
+											disabled={facet.stale}
+											data-checked={checked}
+											onSelect={() =>
+												onChange(toggle(selected, option.value, !checked))
+											}
+										>
+											<Checkbox
+												checked={checked}
+												className="pointer-events-none"
+											/>
+											<span className="flex-1 truncate">{option.label}</span>
+											<FacetCount counts={counts} value={option.value} />
+										</CommandItem>
+									);
+								})}
+							</CommandGroup>
+						</CommandList>
+					</Command>
+				) : (
+					<div className="max-h-72 overflow-x-hidden overflow-y-auto">
+						{selected.length > 0 && (
+							<>
+								<DropdownMenuGroup>
+									<DropdownMenuItem onSelect={() => onChange([])}>
+										Clear
+									</DropdownMenuItem>
+								</DropdownMenuGroup>
+								<DropdownMenuSeparator />
+							</>
+						)}
+						<DropdownMenuGroup>
+							{facet.options.map((option) => {
+								const checked = selected.includes(option.value);
+								return (
+									<DropdownMenuCheckboxItem
+										key={option.value}
+										checked={checked}
+										onSelect={(event) => event.preventDefault()}
+										onCheckedChange={(next) =>
+											onChange(toggle(selected, option.value, next))
+										}
+									>
+										<span className="flex-1 truncate">{option.label}</span>
+										<FacetCount counts={counts} value={option.value} />
+									</DropdownMenuCheckboxItem>
+								);
+							})}
+						</DropdownMenuGroup>
+					</div>
+				)}
+			</DropdownMenuSubContent>
+		</DropdownMenuSub>
+	);
+}
+
+function ReturnToPage({
+	page,
+	setPage,
+}: {
+	page: number;
+	setPage: (page: number) => Promise<void>;
+}) {
+	useMountEffect(() => {
+		void setPage(page);
+	});
+
+	return null;
+}
+
+function SelectionBar<TRow>({
+	selection,
+	selecting,
+}: {
+	selection: DataTableSelection<TRow>;
+	selecting: boolean;
+}) {
+	return (
+		<div
+			aria-hidden={!selecting}
+			className={cn(
+				"col-start-1 row-start-1 flex h-9 items-center gap-2 self-start",
+				!selecting && "invisible",
+			)}
+			inert={!selecting}
+		>
+			<span className="truncate text-13 text-muted-foreground">
+				<span className="font-medium text-foreground tabular-nums">
+					{selection.state.count}
+				</span>{" "}
+				selected
+			</span>
+			<div className="ml-auto flex items-center gap-2">
+				{selection.actions}
+				<Button
+					variant="ghost"
+					size="sm"
+					onClick={() => selection.state.clear()}
+				>
+					Clear
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+function CellControl({ children }: { children: ReactNode }) {
+	return (
+		<span className="inline-flex h-5 items-center">
+			{"​"}
+			{children}
 		</span>
 	);
 }
@@ -144,29 +492,29 @@ export function DataTable<TRow, TSub = unknown>({
 	rows,
 	total,
 	facetCounts,
-	loading,
+	loading = false,
 	facets,
 	tabs,
 	onRowClick,
 	onRowHover,
 	expandable,
+	selection,
 	actions,
 	leadingActions,
 	search,
 	meta,
 	empty,
+	label,
 	className,
-	tableClassName,
 }: DataTableProps<TRow, TSub>) {
 	const [expandedIds, setExpandedIds] = useQueryState(
 		"expand",
 		parseAsArrayOf(parseAsString).withDefault([]),
 	);
-	const expanded = useMemo(() => new Set(expandedIds), [expandedIds]);
-	const defaultHiddenIds = useMemo(
-		() => columns.filter((column) => column.defaultHidden).map((c) => c.id),
-		[columns],
-	);
+	const expanded = new Set(expandedIds);
+	const defaultHiddenIds = columns
+		.filter((column) => column.defaultHidden)
+		.map((column) => column.id);
 	const [hidden, setHidden] = useQueryState(
 		"hide",
 		parseAsArrayOf(parseAsString).withDefault(defaultHiddenIds),
@@ -193,10 +541,18 @@ export function DataTable<TRow, TSub = unknown>({
 	const anyExpandable =
 		expandable != null &&
 		deferredRows.some((row) => expandable.isExpandable(row));
-	const colCount = visibleColumns.length + (anyExpandable ? 1 : 0);
+	const selecting = selection != null && selection.state.count > 0;
 
 	const pageSize = query.pageSize;
 	const totalPages = Math.max(1, Math.ceil(total / pageSize));
+	const pageIsPastEnd = !loading && query.page > totalPages;
+
+	const availableFacets = (facets ?? []).filter(
+		(facet) =>
+			facet.options.length > 0 ||
+			facet.searchable ||
+			(query.filters[facet.id]?.length ?? 0) > 0,
+	);
 
 	const hasFilterControls =
 		tabs != null ||
@@ -206,291 +562,357 @@ export function DataTable<TRow, TSub = unknown>({
 		hideable.length > 0 ||
 		actions != null ||
 		leadingActions != null;
+	const activeFacetFilterCount = availableFacets.filter(
+		(facet) => (query.filters[facet.id]?.length ?? 0) > 0,
+	).length;
 	const activeFilterCount =
-		(tabs && query.tab !== "all" ? 1 : 0) +
-		(facets?.filter((facet) => (query.filters[facet.id] ?? "all") !== "all")
-			.length ?? 0);
+		(tabs && query.tab !== "all" ? 1 : 0) + activeFacetFilterCount;
+
+	const overflow = useOverflowTooltip();
+
+	const showEmpty = deferredRows.length === 0 && !loading;
+	const showHeadings = deferredRows.length > 0 || loading;
+	const wide =
+		visibleColumns.filter((column) => column.hideBelow === undefined).length >
+		NARROW_TABLE_COLUMNS;
 
 	return (
-		<div className={cn("flex min-h-0 flex-1 flex-col gap-3", className)}>
-			<div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between">
-				{search}
-				{hasFilterControls && (
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						className="w-full justify-between sm:hidden"
-						aria-expanded={filtersOpen}
-						aria-controls={filtersId}
-						onClick={() => setFiltersOpen((open) => !open)}
-					>
-						<span className="flex items-center gap-2">
-							<Filter />
-							Filters
-							{activeFilterCount > 0 && (
-								<span className="tabular-nums opacity-60">
-									({activeFilterCount})
-								</span>
-							)}
-						</span>
-						<ChevronDown
-							className={cn(
-								"shrink-0 opacity-60 transition-transform",
-								filtersOpen && "rotate-180",
-							)}
-						/>
-					</Button>
-				)}
-				{/* `lg:contents` so the controls join the search on one row on desktop
-				    while staying a group the Filters button can collapse on mobile —
-				    search itself must never be inside that collapse. */}
+		<div
+			className={cn(
+				"@container/table flex min-h-0 flex-1 flex-col gap-3",
+				className,
+			)}
+		>
+			{pageIsPastEnd ? (
+				<ReturnToPage
+					key={totalPages}
+					page={totalPages}
+					setPage={query.setPage}
+				/>
+			) : null}
+			<div className="grid">
+				{selection ? (
+					<SelectionBar selecting={selecting} selection={selection} />
+				) : null}
 				<div
-					id={filtersId}
+					aria-hidden={selecting || undefined}
 					className={cn(
-						"flex-col gap-2 lg:contents",
-						filtersOpen ? "flex" : "hidden sm:flex",
+						"col-start-1 row-start-1 flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between",
+						selecting && "invisible",
 					)}
+					inert={selecting}
 				>
-					{tabs && (
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									className="w-full justify-between sm:w-auto sm:min-w-44"
-								>
-									<span className="truncate">{activeTabLabel}</span>
-									<ChevronDown className="shrink-0 opacity-60" />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="start" className="min-w-52">
-								<DropdownMenuRadioGroup
-									value={query.tab}
-									onValueChange={(value) => query.setTab(value)}
-								>
-									<DropdownMenuRadioItem value="all">
-										<span className="flex-1">{tabs.allLabel ?? "All"}</span>
-									</DropdownMenuRadioItem>
-									{tabs.options.map((option) => {
-										if (tabCounts?.[option.value] === 0) return null;
-										return (
-											<DropdownMenuRadioItem
-												key={option.value}
-												value={option.value}
-											>
-												<span className="flex-1">{option.label}</span>
-											</DropdownMenuRadioItem>
-										);
-									})}
-								</DropdownMenuRadioGroup>
-							</DropdownMenuContent>
-						</DropdownMenu>
+					{search}
+					{hasFilterControls && (
+						<Button
+							type="button"
+							variant="outline"
+							className="w-full justify-between sm:hidden"
+							aria-expanded={filtersOpen}
+							aria-controls={filtersId}
+							onClick={() => setFiltersOpen((open) => !open)}
+						>
+							<span className="flex items-center gap-2">
+								<ListFilterIcon />
+								Table options
+								{activeFilterCount > 0 && (
+									<span className="tabular-nums opacity-60">
+										({activeFilterCount})
+									</span>
+								)}
+							</span>
+							<ChevronDownIcon
+								className={cn(
+									"shrink-0 opacity-60 transition-transform",
+									filtersOpen && "rotate-180",
+								)}
+							/>
+						</Button>
 					)}
+					<div
+						id={filtersId}
+						className={cn(
+							"flex-col gap-2 lg:contents",
+							filtersOpen ? "flex" : "hidden sm:flex",
+						)}
+					>
+						{leadingActions}
 
-					{leadingActions}
-
-					<div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center lg:ml-auto">
-						{facets?.map((facet) => {
-							const selected = query.filters[facet.id] ?? "all";
-							const active = facet.options.find((o) => o.value === selected);
-							return (
-								<DropdownMenu key={facet.id}>
+						<div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center lg:ml-auto">
+							{tabs && (
+								<DropdownMenu>
 									<DropdownMenuTrigger asChild>
 										<Button
+											type="button"
 											variant="outline"
-											size="sm"
-											className="justify-between"
+											className="justify-start sm:justify-center"
 										>
-											<span className="truncate">
-												{active ? active.label : facet.label}
+											<LayoutListIcon data-icon="inline-start" />
+											{tabs.label ?? "View"}
+											<span className="truncate opacity-60">
+												{activeTabLabel}
 											</span>
-											<ChevronDown
-												data-icon="inline-end"
-												className="opacity-60"
-											/>
 										</Button>
 									</DropdownMenuTrigger>
-									<DropdownMenuContent align="start" className="min-w-44">
+									<DropdownMenuContent align="start" className="min-w-52">
 										<DropdownMenuRadioGroup
-											value={selected}
-											onValueChange={(value) => query.setFilter(facet.id, value)}
+											value={query.tab}
+											onValueChange={(value) => query.setTab(value)}
 										>
 											<DropdownMenuRadioItem value="all">
-												{facet.label}
+												<span className="flex-1">{tabs.allLabel ?? "All"}</span>
 											</DropdownMenuRadioItem>
-											{facet.options.map((option) => (
-												<DropdownMenuRadioItem
-													key={option.value}
-													value={option.value}
-												>
-													{option.label}
-												</DropdownMenuRadioItem>
-											))}
+											{tabs.options.map((option) => {
+												return (
+													<DropdownMenuRadioItem
+														key={option.value}
+														value={option.value}
+														disabled={
+															tabCounts?.[option.value] === 0 &&
+															query.tab !== option.value
+														}
+													>
+														<span className="flex-1">{option.label}</span>
+													</DropdownMenuRadioItem>
+												);
+											})}
 										</DropdownMenuRadioGroup>
 									</DropdownMenuContent>
 								</DropdownMenu>
-							);
-						})}
-						{(sortableColumns.length > 0 || anyExpandable) && (
-							<DropdownMenu>
-								<DropdownMenuTrigger asChild>
-									<Button
-										variant="outline"
-										size="sm"
-										className="justify-start sm:justify-center"
-									>
-										<ArrowsVertical data-icon="inline-start" />
-										Sort
-									</Button>
-								</DropdownMenuTrigger>
-								<DropdownMenuContent align="end" className="min-w-48">
-									<DropdownMenuLabel>Sort by</DropdownMenuLabel>
-									<DropdownMenuRadioGroup
-										value={query.sort}
-										onValueChange={query.setSort}
-									>
-										{anyExpandable && (
-											<DropdownMenuRadioItem value="detail">
-												Detail
-											</DropdownMenuRadioItem>
-										)}
-										{sortableColumns.map((column) => (
-											<DropdownMenuRadioItem key={column.id} value={column.id}>
-												{columnLabel(column)}
-											</DropdownMenuRadioItem>
+							)}
+							{(facets?.length ?? 0) > 0 && (
+								<DropdownMenu>
+									<DropdownMenuTrigger asChild>
+										<Button
+											variant="outline"
+											disabled={availableFacets.length === 0}
+											className="justify-start sm:justify-center"
+										>
+											<ListFilterIcon data-icon="inline-start" />
+											Filters
+											{activeFacetFilterCount > 0 && (
+												<span className="tabular-nums opacity-60">
+													({activeFacetFilterCount})
+												</span>
+											)}
+										</Button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent align="start" className="min-w-48">
+										{availableFacets.map((facet) => (
+											<FacetSubmenu
+												key={facet.id}
+												counts={facetCounts?.[facet.id]}
+												facet={facet}
+												selected={query.filters[facet.id] ?? []}
+												onChange={(values) => query.setFilter(facet.id, values)}
+											/>
 										))}
-									</DropdownMenuRadioGroup>
-									<DropdownMenuSeparator />
-									<DropdownMenuRadioGroup
-										value={query.dir}
-										onValueChange={(value) =>
-											query.setDir(value === "desc" ? "desc" : "asc")
-										}
-									>
-										<DropdownMenuRadioItem value="asc">
-											Ascending
-										</DropdownMenuRadioItem>
-										<DropdownMenuRadioItem value="desc">
-											Descending
-										</DropdownMenuRadioItem>
-									</DropdownMenuRadioGroup>
-								</DropdownMenuContent>
-							</DropdownMenu>
-						)}
-						{hideable.length > 0 && (
-							<DropdownMenu>
-								<DropdownMenuTrigger asChild>
-									<Button
-										variant="outline"
-										size="sm"
-										className="justify-start sm:justify-center"
-									>
-										<Column data-icon="inline-start" />
-										Columns
-										<span className="tabular-nums opacity-60">
-											({visibleColumns.length})
-										</span>
-									</Button>
-								</DropdownMenuTrigger>
-								<DropdownMenuContent align="end" className="min-w-48">
-									<DropdownMenuLabel>Toggle columns</DropdownMenuLabel>
-									{hideable.map((column) => (
-										<DropdownMenuCheckboxItem
-											key={column.id}
-											checked={!hidden.includes(column.id)}
-											onCheckedChange={(checked) =>
-												setHidden((prev) => {
-													const set = new Set(prev);
-													if (checked) set.delete(column.id);
-													else set.add(column.id);
-													return [...set];
-												})
+									</DropdownMenuContent>
+								</DropdownMenu>
+							)}
+							{(sortableColumns.length > 0 || anyExpandable) && (
+								<DropdownMenu>
+									<DropdownMenuTrigger asChild>
+										<Button
+											variant="outline"
+											className="justify-start sm:justify-center"
+										>
+											<ArrowUpDownIcon data-icon="inline-start" />
+											Sort
+										</Button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent align="end" className="min-w-48">
+										<DropdownMenuRadioGroup
+											value={query.sort}
+											onValueChange={query.setSort}
+										>
+											<DropdownMenuLabel>Sort by</DropdownMenuLabel>
+											{anyExpandable && (
+												<DropdownMenuRadioItem value="detail">
+													Detail
+												</DropdownMenuRadioItem>
+											)}
+											{sortableColumns.map((column) => (
+												<DropdownMenuRadioItem
+													key={column.id}
+													value={column.id}
+												>
+													{columnLabel(column)}
+												</DropdownMenuRadioItem>
+											))}
+										</DropdownMenuRadioGroup>
+										<DropdownMenuSeparator />
+										<DropdownMenuRadioGroup
+											value={query.dir}
+											onValueChange={(value) =>
+												query.setDir(value === "desc" ? "desc" : "asc")
 											}
 										>
-											{columnLabel(column)}
-										</DropdownMenuCheckboxItem>
-									))}
-								</DropdownMenuContent>
-							</DropdownMenu>
-						)}
-						{actions}
+											<DropdownMenuRadioItem value="asc">
+												Ascending
+											</DropdownMenuRadioItem>
+											<DropdownMenuRadioItem value="desc">
+												Descending
+											</DropdownMenuRadioItem>
+										</DropdownMenuRadioGroup>
+									</DropdownMenuContent>
+								</DropdownMenu>
+							)}
+							{hideable.length > 0 && (
+								<DropdownMenu>
+									<DropdownMenuTrigger asChild>
+										<Button
+											variant="outline"
+											className="justify-start sm:justify-center"
+										>
+											<Columns3Icon data-icon="inline-start" />
+											Columns
+											<span className="tabular-nums opacity-60">
+												(
+												{
+													visibleColumns.filter(
+														(column) => column.hideable !== false,
+													).length
+												}
+												)
+											</span>
+										</Button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent align="end" className="min-w-48">
+										<DropdownMenuGroup>
+											<DropdownMenuLabel>Toggle columns</DropdownMenuLabel>
+											{hideable.map((column) => (
+												<DropdownMenuCheckboxItem
+													key={column.id}
+													checked={!hidden.includes(column.id)}
+													onSelect={(event) => event.preventDefault()}
+													onCheckedChange={(checked) =>
+														setHidden((prev) => {
+															const set = new Set(prev);
+															if (checked) set.delete(column.id);
+															else set.add(column.id);
+															return [...set];
+														})
+													}
+												>
+													{columnLabel(column)}
+												</DropdownMenuCheckboxItem>
+											))}
+										</DropdownMenuGroup>
+									</DropdownMenuContent>
+								</DropdownMenu>
+							)}
+							{actions}
+						</div>
 					</div>
 				</div>
 			</div>
 
-			<Table
-				className={cn(
-					"table-fixed [&_td:first-child]:pl-4 [&_th:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th:last-child]:pr-4",
-					tableClassName,
-				)}
-				containerClassName="min-h-0 flex-1 overflow-auto rounded-lg border bg-card"
+			<TableFrame
+				label={label}
+				overlay={
+					showEmpty ? (
+						<div className={TABLE_EMPTY_OVERLAY_CLASS}>
+							{typeof empty === "string" || empty == null ? (
+								<p className="text-muted-foreground">
+									{empty ?? "No results found."}
+								</p>
+							) : (
+								empty
+							)}
+						</div>
+					) : null
+				}
 			>
-				<TableHeader className="sticky top-0 z-10 bg-muted [&_th]:bg-muted [&_tr]:border-0 [&_tr]:shadow-[inset_0_-1px_0_var(--border)]">
-					<TableRow>
-						{anyExpandable && (
-							<TableHead className="h-11 w-10 px-3">
-								<span className="sr-only">Detail</span>
-							</TableHead>
-						)}
-						{visibleColumns.map((column) => {
-							const isActive = query.sort === column.id;
-							return (
-								<TableHead
-									key={column.id}
-									className={cn(
-										"h-11 overflow-hidden px-3 font-normal text-muted-foreground",
-										column.width,
-										ALIGN_CLASS[column.align ?? "left"],
-										column.hideBelow && HIDE_BELOW_CLASS[column.hideBelow],
-										column.headClassName,
-									)}
-									aria-sort={
-										isActive
-											? query.dir === "asc"
-												? "ascending"
-												: "descending"
-											: undefined
-									}
-								>
-									{column.sortable ? (
-										<Button
-											variant="ghost"
-											size="xs"
-											onClick={() => query.toggleSort(column.id)}
-											className={cn(
-												"-ml-2 font-normal text-muted-foreground hover:text-foreground",
-												column.align === "right" && "-mr-2 ml-0 flex-row-reverse",
-												column.align === "center" && "mx-auto",
-											)}
+				<Table
+					{...overflow.handlers}
+					aria-busy={loading || undefined}
+					className={cn(TABLE_CLASS, wide && "min-w-lg")}
+				>
+					{showHeadings ? (
+						<TableHeader className={TABLE_HEADER_CLASS}>
+							<TableRow>
+								{selection && (
+									<TableHead
+										className={cn("h-10 w-10 px-3", COLUMN_LAYOUT_CLASS)}
+										data-hide-below="sm"
+									>
+										{deferredRows.length > 0 && (
+											<CellControl>
+												<Checkbox
+													checked={
+														selection.state.allSelected
+															? true
+															: selection.state.someSelected
+																? "indeterminate"
+																: false
+													}
+													onCheckedChange={(checked) =>
+														selection.state.toggleAll(checked === true)
+													}
+													aria-label="Select every row on this page"
+												/>
+											</CellControl>
+										)}
+									</TableHead>
+								)}
+								{anyExpandable && (
+									<TableHead className="h-10 w-10 px-3">
+										<span className="sr-only">Detail</span>
+									</TableHead>
+								)}
+								{visibleColumns.map((column) => {
+									const isActive = query.sort === column.id;
+									return (
+										<TableHead
+											key={column.id}
+											{...columnLayout(column)}
+											className={COLUMN_HEAD_CLASS}
+											aria-sort={
+												isActive
+													? query.dir === "asc"
+														? "ascending"
+														: "descending"
+													: undefined
+											}
 										>
-											{column.header}
-											<SortIndicator active={isActive} dir={query.dir} />
-										</Button>
-									) : (
-										column.header
-									)}
-								</TableHead>
-							);
-						})}
-					</TableRow>
-				</TableHeader>
-				<TableBody>
-					{deferredRows.length === 0 ? (
-						<TableRow className="hover:bg-transparent">
-							<TableCell
-								colSpan={colCount}
-								className="h-32 whitespace-normal py-8 text-center align-middle text-muted-foreground"
-							>
-								{loading ? <Spinner /> : (empty ?? "No results found.")}
-							</TableCell>
-						</TableRow>
-					) : (
-						deferredRows.map((row) => {
+											{column.sortable ? (
+												<Button
+													variant="ghost"
+													size="xs"
+													onClick={() => query.toggleSort(column.id)}
+													className={cn(
+														"-ml-2 font-medium text-13 text-muted-foreground hover:text-foreground",
+														column.align === "right" &&
+															"-mr-2 ml-0 flex-row-reverse",
+														column.align === "center" && "mx-auto",
+													)}
+												>
+													{column.header}
+													<SortIndicator active={isActive} dir={query.dir} />
+												</Button>
+											) : (
+												column.header
+											)}
+										</TableHead>
+									);
+								})}
+							</TableRow>
+						</TableHeader>
+					) : null}
+					<TableBody>
+						{loading && deferredRows.length === 0 ? (
+							<LoadingRows
+								columns={visibleColumns}
+								expandable={anyExpandable}
+								selectable={!!selection}
+							/>
+						) : null}
+						{deferredRows.map((row) => {
 							const id = getRowId(row);
 							const canExpand = expandable?.isExpandable(row) ?? false;
 							const isOpen = canExpand && expanded.has(id);
+							const isSelected = selection?.state.has(id) ?? false;
 							const clickable = canExpand || !!onRowClick;
 							const handleClick = () => {
 								if (canExpand) {
@@ -502,30 +924,47 @@ export function DataTable<TRow, TSub = unknown>({
 										return next.length > 0 ? next : null;
 									});
 								} else {
-									onRowClick?.(row);
+									onRowClick?.(row, deferredRows);
 								}
 							};
 							return (
 								<Fragment key={id}>
 									<TableRow
+										data-state={isSelected ? "selected" : undefined}
+										aria-expanded={canExpand ? isOpen : undefined}
 										onClick={clickable ? handleClick : undefined}
 										onMouseEnter={
 											onRowHover ? () => onRowHover(row) : undefined
 										}
 										onFocus={onRowHover ? () => onRowHover(row) : undefined}
-										className={
-											clickable
-												? anyExpandable
-													? ROW_ACCENT_EXPANDABLE
-													: ROW_ACCENT
-												: undefined
-										}
+										className={cn(clickable && ROW_ACCENT)}
 									>
+										{selection && (
+											<TableCell
+												className={cn("w-10 px-3 py-3", COLUMN_LAYOUT_CLASS)}
+												data-hide-below="sm"
+												onClick={(event) => event.stopPropagation()}
+											>
+												<CellControl>
+													<Checkbox
+														checked={isSelected}
+														onCheckedChange={(checked) =>
+															selection.state.toggle(id, checked === true)
+														}
+														aria-label={
+															selection.rowLabel
+																? `Select ${selection.rowLabel(row)}`
+																: "Select row"
+														}
+													/>
+												</CellControl>
+											</TableCell>
+										)}
 										{anyExpandable && (
 											<TableCell className="w-10 px-3 py-3 text-center text-muted-foreground">
 												{canExpand && (
-													<ChevronRight
-														size={12}
+													<ChevronRightIcon
+														size={16}
 														className={cn(
 															"inline-block transition-transform",
 															isOpen && "rotate-90",
@@ -537,13 +976,8 @@ export function DataTable<TRow, TSub = unknown>({
 										{visibleColumns.map((column) => (
 											<TableCell
 												key={column.id}
-												className={cn(
-													"overflow-hidden px-3 py-3",
-													column.width,
-													ALIGN_CLASS[column.align ?? "left"],
-													column.hideBelow && HIDE_BELOW_CLASS[column.hideBelow],
-													column.cellClassName,
-												)}
+												{...columnLayout(column)}
+												className={cn(COLUMN_CELL_CLASS, "py-3")}
 											>
 												{column.cell(row)}
 											</TableCell>
@@ -562,26 +996,26 @@ export function DataTable<TRow, TSub = unknown>({
 													}
 													className={cn(
 														"bg-muted/30",
-														subClickable &&
-															(anyExpandable
-																? ROW_ACCENT_EXPANDABLE
-																: ROW_ACCENT),
+														subClickable && ROW_ACCENT,
 													)}
 												>
+													{selection && (
+														<TableCell
+															className={cn(
+																"w-10 px-3 py-2.5",
+																COLUMN_LAYOUT_CLASS,
+															)}
+															data-hide-below="sm"
+														/>
+													)}
 													{anyExpandable && (
 														<TableCell className="w-10 px-3 py-2.5" />
 													)}
 													{visibleColumns.map((column) => (
 														<TableCell
 															key={column.id}
-															className={cn(
-																"overflow-hidden px-3 py-2.5 align-top",
-																column.width,
-																ALIGN_CLASS[column.align ?? "left"],
-																column.hideBelow &&
-																	HIDE_BELOW_CLASS[column.hideBelow],
-																column.cellClassName,
-															)}
+															{...columnLayout(column)}
+															className={cn(COLUMN_CELL_CLASS, "py-2.5")}
 														>
 															{expandable.renderSubCell(sub, column.id, row)}
 														</TableCell>
@@ -591,17 +1025,18 @@ export function DataTable<TRow, TSub = unknown>({
 										})}
 								</Fragment>
 							);
-						})
-					)}
-				</TableBody>
-			</Table>
+						})}
+					</TableBody>
+				</Table>
+			</TableFrame>
+			{overflow.tooltip}
 
 			<TablePagination
 				page={query.page}
 				totalPages={totalPages}
 				pageSize={pageSize}
 				total={total}
-				onPageChange={(page) => query.setPage(page)}
+				onPageChange={(page) => void query.setPage(page)}
 				loading={loading}
 				meta={meta}
 			/>

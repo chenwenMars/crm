@@ -5,6 +5,7 @@ import {
 	IsOptional,
 	IsString,
 	IsUrl,
+	Matches,
 	Max,
 	Min,
 	MinLength,
@@ -57,6 +58,26 @@ export class EnvironmentVariables {
 	GOOGLE_CLIENT_SECRET?: string;
 
 	@IsOptional()
+	@IsString()
+	MICROSOFT_CLIENT_ID?: string;
+
+	@IsOptional()
+	@IsString()
+	MICROSOFT_CLIENT_SECRET?: string;
+
+	@IsOptional()
+	@IsString()
+	MICROSOFT_TENANT_ID?: string;
+
+	@IsOptional()
+	@IsString()
+	SLACK_CLIENT_ID?: string;
+
+	@IsOptional()
+	@IsString()
+	SLACK_CLIENT_SECRET?: string;
+
+	@IsOptional()
 	@IsUrl({ require_tld: false })
 	API_URL?: string;
 
@@ -102,11 +123,30 @@ export class EnvironmentVariables {
 	@IsOptional()
 	@IsString()
 	AGENT_BRIDGE_SECRET?: string;
+
+	@IsOptional()
+	@IsString()
+	@Matches(/^[A-Za-z0-9+/]{43}=$/, {
+		message: "MCP_ENCRYPTION_KEY must contain exactly 32 base64-encoded bytes.",
+	})
+	MCP_ENCRYPTION_KEY?: string;
+
+	@IsOptional()
+	@IsString()
+	@Matches(/^[A-Za-z0-9+/]{43}=$/, {
+		message:
+			"CHAT_EVENT_ENCRYPTION_KEY must contain exactly 32 base64-encoded bytes.",
+	})
+	CHAT_EVENT_ENCRYPTION_KEY?: string;
+
+	@IsOptional()
+	@IsString()
+	CRM_TELEMETRY_DISABLED?: string;
 }
 
-export function validateEnv(
-	config: Record<string, unknown>,
-): EnvironmentVariables {
+export type RawEnvironment = Record<string, string | undefined>;
+
+export function validateEnv(config: RawEnvironment): EnvironmentVariables {
 	const validated = plainToInstance(EnvironmentVariables, config, {
 		enableImplicitConversion: true,
 		exposeDefaultValues: true,

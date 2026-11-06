@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { isGoogleConfigured, WORKSPACE_ID } from "@crm/auth";
+import { isGoogleConfigured } from "@crm/auth/env";
+import { WORKSPACE_ID } from "@crm/auth/organization";
 import type { Db } from "@crm/db";
 import { ForbiddenException } from "@nestjs/common";
 import { SsoService } from "../src/sso/sso.service";
@@ -20,8 +21,10 @@ const LIST = {
 	pageSize: 25,
 };
 
+type Seen = { providerWhere?: unknown };
+
 function service(role: string | null, rows: Row[] = []) {
-	const seen: { providerWhere?: unknown } = {};
+	const seen: Seen = {};
 
 	const db = {
 		member: {

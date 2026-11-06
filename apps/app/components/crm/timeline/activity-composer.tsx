@@ -1,6 +1,5 @@
 "use client";
 
-import Calendar from "@carbon/icons-react/es/Calendar";
 import { Calendar as DayPicker } from "@crm/ui/components/calendar";
 import { Icon } from "@crm/ui/components/icon";
 import {
@@ -16,30 +15,33 @@ import {
 } from "@crm/ui/components/popover";
 import { Spinner } from "@crm/ui/components/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@crm/ui/components/toggle-group";
+import { toDay } from "@crm/ui/lib/format";
 import { useMutation } from "@tanstack/react-query";
+import { CalendarIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { activityLabel } from "@/lib/activity-presentation";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
-import { ActivityIcon, activityLabel } from "./activity-icon";
+import { ActivityIcon } from "./activity-icon";
 import type { TimelineAnchor } from "./timeline";
 
 const TYPES = ["NOTE", "CALL", "EMAIL", "MEETING", "TASK"] as const;
 
 type ComposableType = (typeof TYPES)[number];
 
-const dueFormat = new Intl.DateTimeFormat(undefined, {
+const dueFormat = new Intl.DateTimeFormat("en-US", {
 	month: "short",
 	day: "numeric",
 });
 
-const PLACEHOLDER: Record<ComposableType, string> = {
+const PLACEHOLDER = {
 	NOTE: "Log a note, call, email, meeting or task…",
 	CALL: "What came out of the call?",
 	EMAIL: "What was said?",
 	MEETING: "What came out of the meeting?",
 	TASK: "What needs doing?",
-};
+} satisfies Record<ComposableType, string>;
 
 export function ActivityComposer({ anchor }: { anchor: TimelineAnchor }) {
 	const trpc = useTRPC();
@@ -74,7 +76,7 @@ export function ActivityComposer({ anchor }: { anchor: TimelineAnchor }) {
 			type,
 			subject: isTask ? text : undefined,
 			body: isTask ? undefined : text,
-			dueAt: isTask ? (dueAt?.toISOString() ?? null) : undefined,
+			dueAt: isTask ? (dueAt ? toDay(dueAt) : null) : undefined,
 		});
 	};
 
@@ -124,7 +126,7 @@ export function ActivityComposer({ anchor }: { anchor: TimelineAnchor }) {
 						<Popover>
 							<PopoverTrigger asChild>
 								<InputGroupButton variant="ghost" size="xs">
-									<Icon icon={Calendar} data-icon="inline-start" />
+									<Icon icon={CalendarIcon} data-icon="inline-start" />
 									{dueAt ? dueFormat.format(dueAt) : "Due date"}
 								</InputGroupButton>
 							</PopoverTrigger>

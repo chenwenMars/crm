@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AgentSection } from "@/components/landing/agent-section";
+import { LandingAnalytics } from "@/components/landing/analytics";
 import { CapabilitiesSection } from "@/components/landing/capabilities-section";
 import { ClosingCta } from "@/components/landing/closing-cta";
 import { Hero } from "@/components/landing/hero";
@@ -10,7 +11,7 @@ import { ProductShot } from "@/components/landing/product-shot/product-shot";
 export const metadata: Metadata = {
 	title: "The CRM for agents",
 	description:
-		"The first agentic CRM experience — durable research agents that read your inbox, keep every record current and book their own follow-ups.",
+		"The first agentic CRM experience. Durable research agents that read your inbox, keep every record current and book their own follow-ups.",
 };
 
 export default function Home() {
@@ -23,6 +24,7 @@ export default function Home() {
 			<CapabilitiesSection />
 			<ClosingCta />
 			<LandingFooter />
+			<LandingAnalytics />
 		</div>
 	);
 }
